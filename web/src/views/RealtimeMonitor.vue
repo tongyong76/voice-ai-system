@@ -103,11 +103,11 @@ const connectWebSocket = () => {
       messages.value.unshift({
         id: ++msgId,
         deviceId: data.device_id,
-        deviceName: data.device_name || `Device ${data.device_id}`,
+        deviceName: data.device_name || `设备 ${data.device_id}`,
         text: data.text,
         emotion: data.emotion,
-        speaker: data.speaker,
-        timestamp: new Date().toISOString(),
+        speaker: data.speaker_id ? `说话人 #${data.speaker_id}` : undefined,
+        timestamp: data.timestamp || new Date().toISOString(),
       })
       // Keep only last 100 messages
       if (messages.value.length > 100) {

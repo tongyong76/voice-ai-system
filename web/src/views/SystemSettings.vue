@@ -58,7 +58,7 @@
         </el-form-item>
 
         <el-form-item>
-          <el-button type="primary" @click="handleSave">保存设置</el-button>
+          <el-button type="primary" :loading="saving" @click="handleSave">保存设置</el-button>
           <el-button @click="fetchSettings">重置</el-button>
         </el-form-item>
       </el-form>
@@ -69,6 +69,9 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
+import request from '@/api/request'
+
+const saving = ref(false)
 
 const settings = ref({
   aiEngineUrl: 'http://localhost:8001',
@@ -82,13 +85,24 @@ const settings = ref({
 })
 
 const fetchSettings = async () => {
-  // TODO: Fetch from API
-  ElMessage.info('设置已重置')
+  try {
+    const data = await request.get('/settings')
+    settings.value = data as typeof settings.value
+  } catch (error) {
+    // Use defaults
+  }
 }
 
 const handleSave = async () => {
-  // TODO: Save to API
-  ElMessage.success('设置已保存')
+  saving.value = true
+  try {
+    await request.put('/settings', settings.value)
+    ElMessage.success('设置已保存')
+  } catch (error) {
+    ElMessage.error('保存失败')
+  } finally {
+    saving.value = false
+  }
 }
 
 onMounted(() => fetchSettings())

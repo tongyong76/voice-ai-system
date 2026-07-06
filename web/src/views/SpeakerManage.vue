@@ -61,6 +61,7 @@
           <el-upload
             :auto-upload="false"
             :on-change="handleFileChange"
+            :file-list="fileList"
             accept="audio/*"
             multiple
           >
@@ -81,20 +82,15 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { ElMessage, ElMessageBox, type UploadFile } from 'element-plus'
+import { ElMessage, ElMessageBox, type UploadFile, type UploadFiles } from 'element-plus'
 import dayjs from 'dayjs'
-
-interface Speaker {
-  id: number
-  name: string
-  tags: string[]
-  created_at: string
-}
+import { speakerApi, type Speaker } from '@/api/speaker'
 
 const speakers = ref<Speaker[]>([])
 const loading = ref(false)
 const showEnrollDialog = ref(false)
 const enrolling = ref(false)
+const fileList = ref<UploadFiles>([])
 
 const enrollForm = ref({
   name: '',
@@ -104,17 +100,15 @@ const enrollForm = ref({
 
 const formatTime = (time: string) => dayjs(time).format('YYYY-MM-DD HH:mm:ss')
 
-const handleFileChange = (file: UploadFile) => {
-  if (file.raw) {
-    enrollForm.value.files.push(file.raw)
-  }
+const handleFileChange = (file: UploadFile, uploadFiles: UploadFiles) => {
+  fileList.value = uploadFiles
+  enrollForm.value.files = uploadFiles.map(f => f.raw!).filter(Boolean)
 }
 
 const fetchSpeakers = async () => {
   loading.value = true
   try {
-    // TODO: Call API
-    speakers.value = []
+    speakers.value = await speakerApi.list()
   } catch (error) {
     // Error handled
   } finally {
@@ -134,10 +128,15 @@ const handleEnroll = async () => {
 
   enrolling.value = true
   try {
-    // TODO: Call API to enroll speaker
+    await speakerApi.enroll({
+      name: enrollForm.value.name,
+      tags: enrollForm.value.tags,
+      files: enrollForm.value.files,
+    })
     ElMessage.success('注册成功')
     showEnrollDialog.value = false
     enrollForm.value = { name: '', tags: [], files: [] }
+    fileList.value = []
     fetchSpeakers()
   } catch (error) {
     // Error handled
@@ -149,7 +148,7 @@ const handleEnroll = async () => {
 const handleDelete = async (speaker: Speaker) => {
   await ElMessageBox.confirm('确定删除该说话人？', '确认')
   try {
-    // TODO: Call API
+    await speakerApi.delete(speaker.id)
     ElMessage.success('删除成功')
     fetchSpeakers()
   } catch (error) {

@@ -36,7 +36,7 @@ class TaskResponse(BaseModel):
         from_attributes = True
 
 
-@router.create("", response_model=TaskResponse)
+@router.post("", response_model=TaskResponse)
 async def create_task(
     task: TaskCreate,
     db: Session = Depends(get_db),

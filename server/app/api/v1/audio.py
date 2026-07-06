@@ -1,5 +1,6 @@
 import os
 import uuid
+import json
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -10,6 +11,7 @@ from minio import Minio
 from ...core.database import get_db
 from ...core.config import get_settings
 from ...core.security import get_current_user
+from ...core.redis import publish_message
 from ...models.audio import AudioRecord
 from ...models.device import Device
 
@@ -79,8 +81,11 @@ async def upload_audio(
     db.commit()
     db.refresh(audio_record)
 
-    # TODO: Push to Redis queue for AI inference
-    # await publish_message("audio:pending_inference", str(audio_record.id))
+    # Push to Redis queue for AI inference
+    await publish_message(
+        "audio:pending_inference",
+        json.dumps({"audio_id": audio_record.id, "file_path": object_name}),
+    )
 
     return {"id": audio_record.id, "file_path": object_name, "status": "uploaded"}
 

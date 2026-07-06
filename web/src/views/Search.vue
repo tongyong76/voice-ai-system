@@ -15,7 +15,7 @@
           @keyup.enter="handleSearch"
         >
           <template #append>
-            <el-button :icon="Search" @click="handleSearch" />
+            <el-button :icon="SearchIcon" @click="handleSearch" />
           </template>
         </el-input>
       </div>
@@ -61,7 +61,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { Search } from '@element-plus/icons-vue'
+import { Search as SearchIcon } from '@element-plus/icons-vue'
 import { deviceApi, type Device } from '@/api/device'
 import request from '@/api/request'
 

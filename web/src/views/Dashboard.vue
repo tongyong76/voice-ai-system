@@ -108,7 +108,7 @@
             <div v-for="alert in recentAlerts" :key="alert.id" class="alert-item">
               <el-icon :size="16" color="#f56c6c"><WarningFilled /></el-icon>
               <span class="alert-text">{{ alert.message }}</span>
-              <span class="alert-time">{{ formatTime(alert.time) }}</span>
+              <span class="alert-time">{{ formatTime(alert.triggered_at) }}</span>
             </div>
             <el-empty v-if="recentAlerts.length === 0" description="暂无告警" />
           </div>
@@ -119,9 +119,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, nextTick } from 'vue'
 import * as echarts from 'echarts'
 import dayjs from 'dayjs'
+import { statsApi, type RecentAudio, type RecentAlert } from '@/api/stats'
 
 const stats = reactive({
   onlineDevices: 0,
@@ -130,14 +131,18 @@ const stats = reactive({
   alertCount: 0,
 })
 
-const recentAudio = ref([])
-const recentAlerts = ref([])
+const recentAudio = ref<RecentAudio[]>([])
+const recentAlerts = ref<RecentAlert[]>([])
 
 const trendChart = ref<HTMLElement>()
 const emotionChart = ref<HTMLElement>()
 
-const formatTime = (time: string) => dayjs(time).format('MM-DD HH:mm')
-const formatDuration = (ms: number) => {
+let trendChartInstance: echarts.ECharts | null = null
+let emotionChartInstance: echarts.ECharts | null = null
+
+const formatTime = (time: string | null) => time ? dayjs(time).format('MM-DD HH:mm') : '-'
+const formatDuration = (ms: number | null) => {
+  if (!ms) return '-'
   const seconds = Math.floor(ms / 1000)
   const minutes = Math.floor(seconds / 60)
   return `${minutes}:${(seconds % 60).toString().padStart(2, '0')}`
@@ -153,16 +158,15 @@ const getStatusType = (status: string) => {
   return map[status] || 'info'
 }
 
-const initTrendChart = () => {
+const initTrendChart = (data: { hour: string; hours: number }[]) => {
   if (!trendChart.value) return
-  const chart = echarts.init(trendChart.value)
-  const hours = Array.from({ length: 24 }, (_, i) => `${i}:00`)
-  chart.setOption({
+  trendChartInstance = echarts.init(trendChart.value)
+  trendChartInstance.setOption({
     tooltip: { trigger: 'axis' },
-    xAxis: { type: 'category', data: hours },
+    xAxis: { type: 'category', data: data.map(d => d.hour) },
     yAxis: { type: 'value', name: '小时' },
     series: [{
-      data: Array.from({ length: 24 }, () => Math.floor(Math.random() * 100)),
+      data: data.map(d => d.hours),
       type: 'line',
       smooth: true,
       areaStyle: { opacity: 0.3 },
@@ -170,35 +174,52 @@ const initTrendChart = () => {
   })
 }
 
-const initEmotionChart = () => {
+const initEmotionChart = (data: { name: string; value: number }[]) => {
   if (!emotionChart.value) return
-  const chart = echarts.init(emotionChart.value)
-  chart.setOption({
+  emotionChartInstance = echarts.init(emotionChart.value)
+  const chartData = data.length > 0 ? data : [
+    { value: 0, name: '暂无数据' },
+  ]
+  emotionChartInstance.setOption({
     tooltip: { trigger: 'item' },
     legend: { bottom: 0 },
     series: [{
       type: 'pie',
       radius: ['40%', '70%'],
-      data: [
-        { value: 45, name: '中性' },
-        { value: 25, name: '积极' },
-        { value: 15, name: '消极' },
-        { value: 10, name: '愤怒' },
-        { value: 5, name: '其他' },
-      ],
+      data: chartData,
     }],
   })
 }
 
-onMounted(() => {
-  // TODO: Fetch real data
-  stats.onlineDevices = 156
-  stats.todayAudio = 1280
-  stats.speakerCount = 85420
-  stats.alertCount = 12
+const fetchAllData = async () => {
+  try {
+    const [dashboardData, trendData, emotionData, audioData, alertData] = await Promise.all([
+      statsApi.getDashboard(),
+      statsApi.getTrend(1),
+      statsApi.getEmotionDistribution(),
+      statsApi.getRecentAudio(10),
+      statsApi.getRecentAlerts(10),
+    ])
 
-  initTrendChart()
-  initEmotionChart()
+    stats.onlineDevices = dashboardData.onlineDevices
+    stats.todayAudio = dashboardData.todayAudio
+    stats.speakerCount = dashboardData.speakerCount
+    stats.alertCount = dashboardData.alertCount
+
+    recentAudio.value = audioData
+    recentAlerts.value = alertData
+
+    await nextTick()
+    initTrendChart(trendData)
+    initEmotionChart(emotionData)
+  } catch (error) {
+    // Error handled by interceptor, show defaults
+    console.error('Failed to fetch dashboard data:', error)
+  }
+}
+
+onMounted(() => {
+  fetchAllData()
 })
 </script>
 
