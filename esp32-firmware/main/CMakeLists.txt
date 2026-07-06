@@ -1,0 +1,23 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "audio/i2s_input.c"
+        "audio/opus_encoder.c"
+        "network/wifi_manager.c"
+        "network/http_upload.c"
+        "config/device_config.c"
+    INCLUDE_DIRS
+        "."
+        "audio"
+        "network"
+        "config"
+    REQUIRES
+        driver
+        esp_wifi
+        esp_event
+        nvs_flash
+        esp_http_client
+        esp_netif
+        esp_timer
+        json
+)

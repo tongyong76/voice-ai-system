@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Node
+node_modules/
+dist/
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+
+# Docker
+docker-compose.override.yml
+
+# Database
+*.db
+*.sqlite
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ESP32
+build/
+sdkconfig
+sdkconfig.old
+managed_components/
+
+# Models (too large for git)
+ai_engine/models/*/
+!ai_engine/models/.gitkeep
+speaker_db/index/*.index
+speaker_db/index/*.pkl
+
+# Audio files
+*.wav
+*.opus
+*.mp3
+uploads/
