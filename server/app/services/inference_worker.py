@@ -9,6 +9,7 @@ from datetime import datetime
 
 from ..core.config import get_settings
 from ..core.redis import get_redis, publish_message
+from ..core.search import index_transcript
 from ..core.database import SessionLocal
 from ..models.audio import AudioRecord
 from ..models.result import Transcript, SpeakerRecord, EmotionRecord, NLUResult
@@ -87,6 +88,18 @@ async def process_audio(audio_id: int, file_path: str):
         # Update status to completed
         audio.inference_status = "completed"
         db.commit()
+
+        # 索引到 RediSearch (全文检索)
+        try:
+            if asr.get("text") and transcript:
+                await index_transcript(
+                    transcript_id=transcript.id,
+                    audio_id=audio_id,
+                    full_text=asr["text"],
+                    language=asr.get("language", "zh"),
+                )
+        except Exception as e:
+            print(f"RediSearch indexing error (non-fatal): {e}")
 
         # Publish result to WebSocket via Redis pub/sub
         await publish_message(

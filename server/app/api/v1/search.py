@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
 from typing import Optional, List
 
 from ...core.database import get_db
 from ...core.security import get_current_user
-from ...models.result import Transcript, Speaker, EmotionRecord
+from ...core.search import search_transcripts as redis_search
+from ...models.result import Transcript, Speaker
 
 router = APIRouter()
 
@@ -21,30 +21,52 @@ async def search_transcripts(
     db: Session = Depends(get_db),
     user: dict = Depends(get_current_user),
 ):
-    query = db.query(Transcript).filter(Transcript.full_text.contains(q))
+    # 1. RediSearch 全文检索, 获取匹配的 transcript_id 列表
+    hits = await redis_search(
+        query=q,
+        device_id=device_id,
+        start_time=start_time,
+        end_time=end_time,
+        offset=skip,
+        limit=limit,
+    )
 
-    # Join with audio records for filtering
+    if not hits:
+        return []
+
+    # 2. 收集 audio_id, 去 MySQL 做二次过滤 (device_id / 时间范围)
+    transcript_ids = [h["transcript_id"] for h in hits]
+    audio_ids = list(set(h["audio_id"] for h in hits))
+
     from ...models.audio import AudioRecord
 
-    query = query.join(AudioRecord, Transcript.audio_id == AudioRecord.id)
+    query = db.query(Transcript).filter(Transcript.id.in_(transcript_ids))
 
-    if device_id:
-        query = query.filter(AudioRecord.device_id == device_id)
-    if start_time:
-        query = query.filter(AudioRecord.upload_time >= start_time)
-    if end_time:
-        query = query.filter(AudioRecord.upload_time <= end_time)
+    # 如果有设备/时间过滤, 通过 audio_records 表二次筛选
+    if device_id or start_time or end_time:
+        audio_query = db.query(AudioRecord.id).filter(AudioRecord.id.in_(audio_ids))
+        if device_id:
+            audio_query = audio_query.filter(AudioRecord.device_id == device_id)
+        if start_time:
+            audio_query = audio_query.filter(AudioRecord.upload_time >= start_time)
+        if end_time:
+            audio_query = audio_query.filter(AudioRecord.upload_time <= end_time)
+        valid_audio_ids = [r[0] for r in audio_query.all()]
+        query = query.filter(Transcript.audio_id.in_(valid_audio_ids))
 
-    results = query.offset(skip).limit(limit).all()
+    results = query.all()
 
+    # 3. 构建返回结果, 保留 RediSearch 的排序
+    result_map = {r.id: r for r in results}
     return [
         {
-            "transcript_id": r.id,
-            "audio_id": r.audio_id,
-            "text": r.full_text,
-            "segments": r.segments,
+            "transcript_id": h["transcript_id"],
+            "audio_id": h["audio_id"],
+            "text": result_map[h["transcript_id"]].full_text if h["transcript_id"] in result_map else h["text"],
+            "segments": result_map[h["transcript_id"]].segments if h["transcript_id"] in result_map else None,
         }
-        for r in results
+        for h in hits
+        if h["transcript_id"] in result_map
     ]
 
 

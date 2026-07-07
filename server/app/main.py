@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from .core.config import get_settings
 from .core.database import engine, Base
 from .core.redis import redis_subscriber_task
+from .core.search import create_transcript_index
 from .api.v1 import device, task, audio, result, search, alert, auth, speaker, stats, settings as settings_router
 from .api.ws import websocket_endpoint
 
@@ -30,6 +31,12 @@ async def lifespan(app: FastAPI):
             print(f"Created MinIO bucket: {app_settings.MINIO_BUCKET}")
     except Exception as e:
         print(f"MinIO bucket check failed: {e}")
+
+    # 创建 RediSearch 全文索引
+    try:
+        await create_transcript_index()
+    except Exception as e:
+        print(f"RediSearch index creation failed: {e}")
 
     # Start background tasks
     import asyncio

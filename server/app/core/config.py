@@ -39,10 +39,6 @@ class Settings(BaseSettings):
     MINIO_BUCKET: str = "voice-audio"
     MINIO_SECURE: bool = False
 
-    # Elasticsearch
-    ES_HOST: str = "localhost"
-    ES_PORT: int = 9200
-
     # JWT
     SECRET_KEY: str = "your-secret-key-change-in-production"
     ALGORITHM: str = "HS256"
