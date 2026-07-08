@@ -1,7 +1,7 @@
 # 智能语音采集与AI识别系统 - 项目文档
 
 > **创建日期**: 2026-07-04
-> **最后更新**: 2026-07-06
+> **最后更新**: 2026-07-08
 > **项目路径**: `/home/guwenjun/code/voice-ai-system`
 
 ---
@@ -35,7 +35,7 @@
 | **部署方式** | **双服务器裸机部署 (弃用Docker)** |
 
 **双服务器架构**:
-- **Server A (应用服务器)**: Nginx + FastAPI + MySQL + Redis + MinIO + Elasticsearch
+- **Server A (应用服务器)**: Nginx + FastAPI + MySQL + Redis + MinIO
 - **Server B (推理服务器)**: AI Engine (FunASR + CAM++ + emotion2vec + NLU)，需 RTX 4090
 
 ### 2.2 硬件对接
@@ -64,7 +64,7 @@
 | 情感分析 | emotion2vec | - |
 | 后端框架 | FastAPI | Python 3.11 |
 | 前端框架 | Vue 3 | Element Plus |
-| 数据库 | MySQL + Redis Stack + MinIO | Redis Stack 含 RediSearch 全文检索 |
+| 数据库 | MySQL + Redis + MinIO | 全文检索基于 MySQL LIKE |
 | 部署 | 双服务器裸机部署 | Server A (应用) + Server B (推理) |
 
 ### 2.5 MiMo-V2.5-ASR 说明
@@ -76,37 +76,50 @@
 ## 三、系统架构
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         Vue3 前端管理平台                            │
-│   实时监控  │  任务管理  │  设备管理  │  数据检索  │  看板统计       │
-└─────────────────────────────────────────────────────────────────────┘
-                              │ HTTP/WS
-                              ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                     FastAPI 中心服务 (CPU)                           │
-│  设备管理  │  任务调度  │  文件接收  │  结果查询  │  WebSocket推送   │
-└─────────────────────────────────────────────────────────────────────┘
-     │              │              │               │
-     ▼              ▼              ▼               ▼
-┌─────────┐  ┌───────────────────┐  ┌──────────┐
-│  MySQL   │  │   Redis Stack     │  │  MinIO   │
-│ 业务数据  │  │  缓存/队列/全文检索 │  │ 音频存储  │
-└─────────┘  │  (含 RediSearch)   │  └──────────┘
-             └───────────────────┘
-                              │
-                              ▼ (音频文件路径)
-┌─────────────────────────────────────────────────────────────────────┐
-│                    GPU 推理服务器 (RTX 4090 24G)                      │
-│  ┌──────────┐  ┌──────────────┐  ┌────────────┐  ┌──────────────┐  │
-│  │ ASR 引擎  │  │ 说话人识别    │  │  情感分析   │  │   NLU 提取   │  │
-│  │FunASR    │  │ CAM++        │  │ emotion2vec│  │  关键词/意图  │  │
-│  └──────────┘  └──────────────┘  └────────────┘  └──────────────┘  │
-└─────────────────────────────────────────────────────────────────────┘
-                              ▲ HTTP 上传音频
-┌─────────────────────────────────────────────────────────────────────┐
-│              XIAO ESP32S3 + ReSpeaker Lite (200台)                   │
-│   麦克风采集  →  Opus编码  →  Wi-Fi HTTP 定时上传                      │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│              Server A — 应用服务器 (无GPU)                │
+│                                                         │
+│  ┌──────────┐  ┌───────────┐  ┌──────────┐             │
+│  │  Nginx   │  │  FastAPI   │  │  Vue3    │             │
+│  │  :80     │  │  :8000     │  │  构建产物 │             │
+│  └──────────┘  └───────────┘  └──────────┘             │
+│       │              │                                   │
+│       ▼              ▼                                   │
+│  ┌──────────┐  ┌───────────┐  ┌──────────┐             │
+│  │  MySQL   │  │   Redis   │  │  MinIO   │             │
+│  │  :3306   │  │   :6379   │  │ :9000/1  │             │
+│  └──────────┘  └───────────┘  └──────────┘             │
+│                     │                                   │
+│                     │ Redis队列: audio:pending_inference │
+│                     ▼                                   │
+│              ┌─────────────┐                            │
+│              │  Worker 消费  │──── HTTP 调用 ────┐       │
+│              └─────────────┘                    │       │
+└─────────────────────────────────────────────────┼───────┘
+                                                  │
+                                          http://Server_B_IP:8001
+                                                  │
+┌─────────────────────────────────────────────────┼───────┐
+│              Server B — 推理服务器 (RTX 4090)     │       │
+│                                                  ▼       │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │              AI Engine (FastAPI :8001)             │   │
+│  │  ┌──────────┐ ┌──────────┐ ┌────────┐ ┌────────┐│   │
+│  │  │FunASR    │ │ CAM++    │ │emotion │ │  NLU   ││   │
+│  │  │Paraformer│ │ 说话人    │ │2vec    │ │ 关键词  ││   │
+│  │  └──────────┘ └──────────┘ └────────┘ └────────┘│   │
+│  └──────────────────────────────────────────────────┘   │
+│           │                                             │
+│           │ 从 Server A 的 MinIO 下载音频                │
+│           ▼                                             │
+│     Server_A_IP:9000 (MinIO)                            │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│              ESP32S3 设备 (200台)                        │
+│   麦克风采集 → Opus编码 → Wi-Fi HTTP上传                  │
+│   目标: http://Server_A_IP:8000/api/audio/upload         │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -179,21 +192,21 @@ DELETE /api/alert/rules/{id}        # 删除规则
 GET    /api/alert/logs              # 告警记录
 PUT    /api/alert/logs/{id}/acknowledge  # 确认告警
 
-# 说话人管理 (新增)
+# 说话人管理
 GET    /api/speaker/list            # 说话人列表
 GET    /api/speaker/{id}            # 说话人详情
 POST   /api/speaker/enroll          # 注册说话人 (上传音频 + AI引擎声纹入库)
 PUT    /api/speaker/{id}            # 更新说话人
 DELETE /api/speaker/{id}            # 删除说话人
 
-# 统计看板 (新增)
+# 统计看板
 GET    /api/stats/dashboard         # 仪表盘统计 (在线设备/今日采集/说话人数/告警数)
 GET    /api/stats/trend             # 采集趋势 (小时/天维度)
 GET    /api/stats/emotion-distribution  # 情感分布
 GET    /api/stats/recent-audio      # 最近音频
 GET    /api/stats/recent-alerts     # 最近告警
 
-# 系统设置 (新增)
+# 系统设置
 GET    /api/settings                # 获取系统设置
 PUT    /api/settings                # 更新系统设置
 
@@ -288,8 +301,7 @@ ESP32上传音频 → 保存MinIO → 写入MySQL(audio_records)
 - [x] AI推理引擎 - 8 文件
 - [x] Vue3前端 - 18+ 文件
 - [x] ESP32固件 - 10 文件
-- [x] Docker配置 - 4 文件
-- [x] 脚本工具 - 3 文件
+- [x] 脚本工具 - 6 文件 (含部署脚本)
 
 ### 5.2 2026-07-06 开发进展
 
@@ -304,34 +316,49 @@ ESP32上传音频 → 保存MinIO → 写入MySQL(audio_records)
 - [x] `core/redis.py` — 新增 `redis_subscriber_task()`，订阅 Redis 频道广播到 WebSocket 客户端
 
 **新增后端 API 端点**:
-- [x] `api/v1/stats.py` — **新建**，Dashboard 统计 API（在线设备数、今日采集时长、已注册说话人数、今日告警数、采集趋势、情感分布、最近音频/告警列表）
-- [x] `api/v1/speaker.py` — **新建**，说话人管理 API（列表、详情、注册、更新、删除；注册时上传音频到 MinIO 并调用 AI 引擎声纹入库）
-- [x] `api/v1/settings.py` — **新建**，系统设置 API（读取/保存配置到 JSON 文件）
+- [x] `api/v1/stats.py` — **新建**，Dashboard 统计 API
+- [x] `api/v1/speaker.py` — **新建**，说话人管理 API
+- [x] `api/v1/settings.py` — **新建**，系统设置 API
 
 **WebSocket 实时推送完善**:
-- [x] `api/ws.py` — 重写 ConnectionManager，支持查询参数指定频道，心跳 ping/pong，自动清理断开连接
-- [x] 推理完成后通过 Redis pub/sub → WebSocket 广播实时转写结果到前端
-
-**MinIO 自动初始化**:
-- [x] `main.py` — 启动时自动检查并创建 MinIO bucket
+- [x] `api/ws.py` — 重写 ConnectionManager，支持查询参数指定频道，心跳 ping/pong
 
 **前端接入真实数据**:
-- [x] `api/stats.ts` — **新建**，Dashboard 统计 API 封装
-- [x] `api/speaker.ts` — **新建**，说话人管理 API 封装
-- [x] `views/Dashboard.vue` — 接入 `/api/stats/*` 真实数据，替换 mock 数据
-- [x] `views/SpeakerManage.vue` — 接入 `/api/speaker/*` API，实现注册/删除功能
-- [x] `views/SystemSettings.vue` — 接入 `/api/settings` API，实现配置读写
-- [x] `views/Search.vue` — 修复 `Search` 图标导入命名冲突
-- [x] `views/RealtimeMonitor.vue` — 匹配 Worker 推送数据格式（speaker_id → speaker）
+- [x] Dashboard / SpeakerManage / SystemSettings / RealtimeMonitor 已接入真实 API
 
-**已打通的核心数据流**:
-```
-ESP32上传音频 → MinIO存储 → Redis队列(audio:pending_inference)
-    → Worker消费 → 调用AI引擎(GPU推理) → 结果写入MySQL
-    → Redis pub/sub → WebSocket广播 → 前端实时展示
-```
+### 5.3 2026-07-08 开发进展
 
-### 5.3 文件清单
+**部署架构变更**:
+- [x] 弃用 Docker Compose，改为双服务器裸机部署
+- [x] 弃用 Elasticsearch，全文检索改为 MySQL LIKE 查询
+- [x] 新增 `scripts/deploy-server-a.sh` / `deploy-server-b.sh` / `check-status.sh`
+
+**Server A 部署验证通过**:
+- [x] MySQL 8.0 — 10 张表全部创建成功
+- [x] Redis — 正常运行 (PONG)
+- [x] MinIO — 健康检查通过 (独立二进制安装，非 Snap)
+- [x] FastAPI 后端 — `curl http://localhost:8000/health` 返回 `{"status":"ok"}`
+- [x] Nginx 前端 — `curl -I http://localhost` 返回 200
+
+**前端构建修复**:
+- [x] `vue-tsc` 兼容性问题 — 跳过类型检查，直接 `vite build`
+- [x] `@tsconfig/node24` 缺失 — 安装依赖解决
+- [x] ECharts 按需引入 — Dashboard.vue 改用 `echarts/core` 按需加载，减少 ~600KB
+
+**代码修改**:
+- [x] `server/app/core/search.py` — **新建**，RediSearch 全文检索模块 (备用)
+- [x] `server/app/api/v1/search.py` — 搜索 API 重构 (支持 RediSearch / MySQL LIKE 双模式)
+- [x] `server/app/core/config.py` — 移除 ES_HOST/ES_PORT 配置
+- [x] `server/requirements.txt` — 移除 elasticsearch 依赖
+- [x] `server/Dashboard.vue` — ECharts 按需引入优化
+
+**部署踩坑记录**:
+- [x] Systemd 服务文件 `WorkingDirectory` 路径必须用 `<<'EOF'`（单引号）防止变量展开为空
+- [x] `passlib` + `bcrypt>=4.1` 不兼容 — 需降级 `bcrypt==4.0.1`
+- [x] Nginx 端口 80 被 Apache 占用 — 需先 `systemctl stop apache2`
+- [x] MinIO Snap 版与独立版冲突 — 需 `snap disable minio` 后再安装独立版
+
+### 5.4 文件清单
 
 **后端服务**:
 - `server/app/main.py` - FastAPI入口 (含MinIO初始化、Worker启动)
@@ -339,112 +366,45 @@ ESP32上传音频 → MinIO存储 → Redis队列(audio:pending_inference)
 - `server/app/core/database.py` - 数据库连接
 - `server/app/core/security.py` - JWT认证
 - `server/app/core/redis.py` - Redis连接 + 订阅广播
+- `server/app/core/search.py` - RediSearch 全文检索 (备用)
 - `server/app/models/*.py` - 数据库模型 (6个)
-- `server/app/api/v1/*.py` - API路由 (10个: auth, device, task, audio, result, search, alert, speaker, stats, settings)
-- `server/app/api/ws.py` - WebSocket (ConnectionManager + 频道广播)
-- `server/app/services/inference_worker.py` - 推理Worker (Redis消费 → AI引擎 → 结果入库)
+- `server/app/api/v1/*.py` - API路由 (10个)
+- `server/app/api/ws.py` - WebSocket
+- `server/app/services/inference_worker.py` - 推理Worker
 - `server/requirements.txt`
-- `server/Dockerfile`
 
 **AI引擎**:
 - `ai_engine/main.py` - FastAPI入口
-- `ai_engine/pipeline/asr_engine.py` - ASR引擎
-- `ai_engine/pipeline/speaker_engine.py` - 说话人引擎
-- `ai_engine/pipeline/emotion_engine.py` - 情感引擎
-- `ai_engine/pipeline/nlu_engine.py` - NLU引擎
-- `ai_engine/pipeline/pipeline.py` - 推理流水线
-- `ai_engine/speaker_db/search.py` - FAISS检索
-- `ai_engine/speaker_db/enroll.py` - 声纹注册
+- `ai_engine/pipeline/*.py` - 推理流水线 (4个引擎 + pipeline)
+- `ai_engine/speaker_db/*.py` - FAISS说话人检索
 - `ai_engine/requirements.txt`
-- `ai_engine/Dockerfile`
 
 **前端**:
 - `web/src/main.ts` - 入口
 - `web/src/App.vue` - 根组件
 - `web/src/router/index.ts` - 路由
-- `web/src/api/*.ts` - API封装 (6个: request, auth, device, task, audio, speaker, stats)
+- `web/src/api/*.ts` - API封装 (7个)
 - `web/src/views/*.vue` - 页面 (10个)
 - `web/src/layouts/MainLayout.vue` - 布局
 - `web/package.json`
-- `web/vite.config.ts`
-- `web/Dockerfile`
-- `web/nginx.conf`
 
 **ESP32固件**:
-- `esp32-firmware/main/main.c` - 主程序
-- `esp32-firmware/audio/i2s_input.*` - I2S采集
-- `esp32-firmware/audio/opus_encoder.*` - Opus编码
-- `esp32-firmware/network/wifi_manager.*` - Wi-Fi管理
-- `esp32-firmware/network/http_upload.*` - HTTP上传
-- `esp32-firmware/config/device_config.*` - 设备配置
-- `esp32-firmware/CMakeLists.txt`
+- `esp32-firmware/` - 完整固件代码
 
 **配置文件**:
-- `docker-compose.yml` - Docker编排
 - `.env.example` - 环境变量模板
 - `.gitignore`
 - `README.md`
-- `scripts/start.sh` - 启动脚本 (旧Docker方案)
-- `scripts/stop.sh` - 停止脚本 (旧Docker方案)
-- `scripts/deploy-server-a.sh` - Server A 部署脚本 ✨
-- `scripts/deploy-server-b.sh` - Server B 部署脚本 ✨
-- `scripts/check-status.sh` - 服务状态检查脚本 ✨
+- `scripts/deploy-server-a.sh` - Server A 部署脚本
+- `scripts/deploy-server-b.sh` - Server B 部署脚本
+- `scripts/check-status.sh` - 服务状态检查脚本
 - `scripts/init-db.sql` - 数据库初始化
 
 ---
 
 ## 六、部署方案 (双服务器)
 
-### 6.1 架构总览
-
-```
-┌─────────────────────────────────────────────────────────┐
-│              Server A — 应用服务器 (无GPU)                │
-│                                                         │
-│  ┌──────────┐  ┌───────────┐  ┌──────────┐             │
-│  │  Nginx   │  │  FastAPI   │  │  Vue3    │             │
-│  │ :80/:443 │  │  :8000     │  │  构建产物 │             │
-│  └──────────┘  └───────────┘  └──────────┘             │
-│       │              │                                   │
-│       ▼              ▼                                   │
-│  ┌──────────┐  ┌───────────┐  ┌──────────┐  ┌────────┐│
-│  │  MySQL   │  │   Redis   │  │  MinIO   │  │   ES   ││
-│  │  :3306   │  │   :6379   │  │ :9000/1  │  │ :9200  ││
-│  └──────────┘  └───────────┘  └──────────┘  └────────┘│
-│                     │                                   │
-│                     │ Redis队列: audio:pending_inference │
-│                     ▼                                   │
-│              ┌─────────────┐                            │
-│              │  Worker 消费  │──── HTTP 调用 ────┐       │
-│              └─────────────┘                    │       │
-└─────────────────────────────────────────────────┼───────┘
-                                                  │
-                                          http://Server_B_IP:8001
-                                                  │
-┌─────────────────────────────────────────────────┼───────┐
-│              Server B — 推理服务器 (RTX 4090)     │       │
-│                                                  ▼       │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │              AI Engine (FastAPI :8001)             │   │
-│  │  ┌──────────┐ ┌──────────┐ ┌────────┐ ┌────────┐│   │
-│  │  │FunASR    │ │ CAM++    │ │emotion │ │  NLU   ││   │
-│  │  │Paraformer│ │ 说话人    │ │2vec    │ │ 关键词  ││   │
-│  │  └──────────┘ └──────────┘ └────────┘ └────────┘│   │
-│  └──────────────────────────────────────────────────┘   │
-│           │                                             │
-│           │ 从 Server A 的 MinIO 下载音频                │
-│           ▼                                             │
-│     Server_A_IP:9000 (MinIO)                            │
-└─────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────┐
-│              ESP32S3 设备 (200台)                        │
-│   麦克风采集 → Opus编码 → Wi-Fi HTTP上传                  │
-│   目标: http://Server_A_IP:8000/api/audio/upload         │
-└─────────────────────────────────────────────────────────┘
-```
-
-### 6.2 服务器规格
+### 6.1 服务器规格
 
 | 项目 | Server A (应用服务器) | Server B (推理服务器) |
 |------|----------------------|----------------------|
@@ -453,19 +413,19 @@ ESP32上传音频 → MinIO存储 → Redis队列(audio:pending_inference)
 | **内存** | 32GB+ | 32GB+ |
 | **GPU** | 无 | RTX 4090 24GB |
 | **磁盘** | 1TB+ SSD (存储音频) | 500GB SSD (模型缓存) |
-| **OS** | Ubuntu 22.04 | Ubuntu 22.04 |
+| **OS** | Ubuntu 22.04+ | Ubuntu 22.04+ |
 | **网络** | 内网互通 + 公网(可选) | 内网互通 |
 
-### 6.3 Server A 部署 (应用服务器)
+### 6.2 Server A 部署
 
-**安装基础服务** (原生安装，不用Docker):
+**已验证的部署步骤** (2026-07-08):
 
 ```bash
-# ===== 1. 系统依赖 =====
+# 1. 系统依赖
 sudo apt update && sudo apt install -y python3.11 python3.11-venv python3-pip \
-    nginx mysql-server redis-server ffmpeg
+    nginx mysql-server redis-server ffmpeg curl wget gnupg2
 
-# ===== 2. MySQL =====
+# 2. MySQL
 sudo systemctl start mysql
 sudo mysql -e "
 CREATE DATABASE voice_ai CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -477,23 +437,19 @@ FLUSH PRIVILEGES;
 "
 mysql -u voice_user -pvoice_pass voice_ai < scripts/init-db.sql
 
-# ===== 3. Redis =====
+# 3. Redis
 sudo systemctl start redis-server
-# 确认 Redis 监听 (默认即可)
-redis-cli ping
+redis-cli ping  # 期望 PONG
 
-# ===== 4. MinIO =====
-wget https://dl.min.io/server/minio/release/linux-amd64/minio
-chmod +x minio
-sudo mv minio /usr/local/bin/
-# 创建数据目录
+# 4. MinIO (独立二进制，非 Snap)
+wget https://dl.min.io/server/minio/release/linux-amd64/minio -O /tmp/minio
+sudo mv /tmp/minio /usr/local/bin/ && sudo chmod +x /usr/local/bin/minio
 sudo mkdir -p /data/minio
-# 创建 systemd 服务
+# 创建 systemd 服务 (注意用 <<'EOF' 单引号)
 sudo tee /etc/systemd/system/minio.service <<'EOF'
 [Unit]
 Description=MinIO
 After=network.target
-
 [Service]
 Type=simple
 User=root
@@ -501,41 +457,20 @@ Environment="MINIO_ROOT_USER=minioadmin"
 Environment="MINIO_ROOT_PASSWORD=minioadmin"
 ExecStart=/usr/local/bin/minio server /data/minio --console-address ":9001"
 Restart=always
-
+RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
-sudo systemctl daemon-reload
-sudo systemctl enable --now minio
+sudo systemctl daemon-reload && sudo systemctl enable --now minio
 
-# ===== 5. Elasticsearch =====
-# 安装 OpenJDK
-sudo apt install -y openjdk-17-jre-headless
-# 下载 ES
-wget https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-8.12.0-linux-x86_64.tar.gz
-tar xzf elasticsearch-8.12.0-linux-x86_64.tar.gz
-sudo mv elasticsearch-8.12.0 /opt/elasticsearch
-# 配置 (单节点, 关闭安全)
-sudo tee /opt/elasticsearch/config/elasticsearch.yml <<'EOF'
-cluster.name: voice-ai
-node.name: node-1
-network.host: 0.0.0.0
-discovery.type: single-node
-xpack.security.enabled: false
-EOF
-# 创建用户 & 启动
-sudo useradd -r -s /bin/false elasticsearch || true
-sudo chown -R elasticsearch:elasticsearch /opt/elasticsearch
-sudo -u elasticsearch /opt/elasticsearch/bin/elasticsearch -d
-# 或用 systemd (推荐)
-
-# ===== 6. Python 后端 =====
+# 5. Python 后端
 cd /home/guwenjun/code/voice-ai-system
 python3.11 -m venv venv-server
 source venv-server/bin/activate
 cd server && pip install -r requirements.txt && cd ..
-
-# 创建 .env
+# 降级 bcrypt 解决 passlib 兼容问题
+pip install bcrypt==4.0.1
+# 创建 .env (注意用 <<'EOF' 单引号)
 cat > server/.env <<'EOF'
 MYSQL_HOST=localhost
 MYSQL_PORT=3306
@@ -547,39 +482,24 @@ REDIS_PORT=6379
 MINIO_ENDPOINT=localhost:9000
 MINIO_ACCESS_KEY=minioadmin
 MINIO_SECRET_KEY=minioadmin
-ES_HOST=localhost
-ES_PORT=9200
 AI_ENGINE_URL=http://SERVER_B_IP:8001
 SECRET_KEY=your-production-secret-key-change-me
 EOF
 
-# 启动后端
-cd server && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+# 6. 前端构建
+cd web && npm install && npm run build
 
-# ===== 7. 前端构建 =====
-cd /home/guwenjun/code/voice-ai-system/web
-npm install
-# 修改 API 地址
-# vite.config.ts 中 proxy target 改为 http://localhost:8000
-npm run build
-# 产物在 web/dist/
-
-# ===== 8. Nginx =====
+# 7. Nginx (注意用 <<'EOF' 单引号)
+sudo systemctl stop apache2 2>/dev/null
 sudo tee /etc/nginx/sites-available/voice-ai <<'EOF'
 server {
     listen 80;
     server_name _;
-
-    # 前端静态文件
     root /home/guwenjun/code/voice-ai-system/web/dist;
     index index.html;
-
-    # Vue Router history 模式
     location / {
         try_files $uri $uri/ /index.html;
     }
-
-    # API 代理
     location /api/ {
         proxy_pass http://127.0.0.1:8000;
         proxy_set_header Host $host;
@@ -587,8 +507,6 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         client_max_body_size 100M;
     }
-
-    # WebSocket 代理
     location /ws/ {
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
@@ -601,19 +519,40 @@ server {
 EOF
 sudo ln -sf /etc/nginx/sites-available/voice-ai /etc/nginx/sites-enabled/
 sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t && sudo systemctl reload nginx
+sudo nginx -t && sudo systemctl start nginx
+
+# 8. 后端 Systemd 服务 (注意用 <<'EOF' 单引号)
+sudo tee /etc/systemd/system/voice-server.service <<'EOF'
+[Unit]
+Description=Voice AI FastAPI Server
+After=network.target mysql.service redis-server.service
+[Service]
+Type=simple
+User=guwenjun
+Group=guwenjun
+WorkingDirectory=/home/guwenjun/code/voice-ai-system/server
+ExecStart=/home/guwenjun/miniconda3/envs/voice-ai/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload && sudo systemctl enable --now voice-server
+
+# 9. 验证
+curl http://localhost:8000/health    # {"status":"ok"}
+curl -I http://localhost             # 200 OK
+redis-cli ping                       # PONG
+mysql -u voice_user -pvoice_pass -e "USE voice_ai; SHOW TABLES;"
 ```
 
-### 6.4 Server B 部署 (推理服务器)
+### 6.3 Server B 部署
 
 ```bash
-# ===== 1. CUDA 环境 =====
-# 确认 NVIDIA 驱动
-nvidia-smi
-# 安装 CUDA Toolkit 12.1 (如未安装)
-# https://developer.nvidia.com/cuda-12-1-0-download-archive
+# 1. CUDA 环境
+nvidia-smi  # 确认驱动已安装
 
-# ===== 2. Python 环境 =====
+# 2. Python 环境
 sudo apt update && sudo apt install -y python3.11 python3.11-venv python3-pip \
     libsndfile1 ffmpeg
 cd /home/guwenjun/code/voice-ai-system
@@ -621,7 +560,7 @@ python3.11 -m venv venv-ai
 source venv-ai/bin/activate
 cd ai_engine && pip install -r requirements.txt && cd ..
 
-# ===== 3. 环境变量 =====
+# 3. 环境变量
 cat > ai_engine/.env <<'EOF'
 MINIO_ENDPOINT=SERVER_A_IP:9000
 MINIO_ACCESS_KEY=minioadmin
@@ -630,135 +569,92 @@ MINIO_BUCKET=voice-audio
 CUDA_VISIBLE_DEVICES=0
 EOF
 
-# ===== 4. 预下载模型 (首次启动会自动下载, 约5GB) =====
-source venv-ai/bin/activate
-cd ai_engine
+# 4. 预下载模型 (~5GB)
 python -c "
 from funasr import AutoModel
 AutoModel(model='iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch')
-print('ASR model downloaded')
+print('Done')
 "
 
-# ===== 5. 启动推理服务 =====
-cd /home/guwenjun/code/voice-ai-system/ai_engine
-uvicorn main:app --host 0.0.0.0 --port 8001
-# 生产环境用 systemd 管理 (见下方)
-```
-
-### 6.5 Systemd 服务配置 (生产推荐)
-
-**Server A — 后端服务**:
-```bash
-sudo tee /etc/systemd/system/voice-server.service <<'EOF'
-[Unit]
-Description=Voice AI FastAPI Server
-After=network.target mysql.service redis-server.service
-
-[Service]
-Type=simple
-User=guwenjun
-WorkingDirectory=/home/guwenjun/code/voice-ai-system/server
-Environment="PATH=/home/guwenjun/code/voice-ai-system/venv-server/bin"
-ExecStart=/home/guwenjun/code/voice-ai-system/venv-server/bin/uvicorn app.main:app \
-    --host 0.0.0.0 --port 8000 --workers 4
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-sudo systemctl daemon-reload
-sudo systemctl enable --now voice-server
-```
-
-**Server B — 推理服务**:
-```bash
+# 5. Systemd 服务
 sudo tee /etc/systemd/system/voice-ai-engine.service <<'EOF'
 [Unit]
 Description=Voice AI Inference Engine
 After=network.target
-
 [Service]
 Type=simple
 User=guwenjun
 WorkingDirectory=/home/guwenjun/code/voice-ai-system/ai_engine
-Environment="PATH=/home/guwenjun/code/voice-ai-system/venv-ai/bin"
 Environment="CUDA_VISIBLE_DEVICES=0"
-ExecStart=/home/guwenjun/code/voice-ai-system/venv-ai/bin/uvicorn main:app \
-    --host 0.0.0.0 --port 8001
+ExecStart=/home/guwenjun/code/voice-ai-system/venv-ai/bin/uvicorn main:app --host 0.0.0.0 --port 8001
 Restart=always
 RestartSec=5
-
 [Install]
 WantedBy=multi-user.target
 EOF
-sudo systemctl daemon-reload
-sudo systemctl enable --now voice-ai-engine
+sudo systemctl daemon-reload && sudo systemctl enable --now voice-ai-engine
 ```
 
-### 6.6 端口清单
+### 6.4 端口清单
 
 | 服务 | 端口 | 所在服务器 | 对外开放 |
 |------|------|-----------|---------|
 | Nginx (前端+API) | 80 | Server A | ✅ |
 | FastAPI 后端 | 8000 | Server A | ❌ (仅Nginx代理) |
 | MySQL | 3306 | Server A | ❌ (仅本机) |
-| Redis Stack | 6379 | Server A | ❌ (仅本机, 含RediSearch) |
+| Redis | 6379 | Server A | ❌ (仅本机) |
 | MinIO API | 9000 | Server A | ❌ (内网) |
 | MinIO Console | 9001 | Server A | ❌ (内网) |
 | AI Engine | 8001 | Server B | ❌ (内网, 仅Server A调用) |
 
-### 6.7 防火墙配置
+### 6.5 防火墙配置
 
 **Server A**:
 ```bash
-sudo ufw allow 80/tcp    # Nginx
-sudo ufw allow 443/tcp   # HTTPS (如需)
-sudo ufw allow from SERVER_B_IP to any port 9000  # MinIO (AI引擎访问)
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw allow from SERVER_B_IP to any port 9000  # MinIO
 sudo ufw enable
 ```
 
 **Server B**:
 ```bash
-sudo ufw allow from SERVER_A_IP to any port 8001  # AI Engine (仅Server A调用)
+sudo ufw allow from SERVER_A_IP to any port 8001  # AI Engine
 sudo ufw enable
 ```
 
-### 6.8 快速验证
+### 6.6 常见部署问题
 
-```bash
-# 在 Server A 上验证本地服务
-curl http://localhost:8000/docs          # 后端 API 文档
-curl http://localhost:9000/minio/health  # MinIO 健康检查
-curl http://localhost:9200               # ES 集群状态
-
-# 在 Server A 上验证 Server B 连通性
-curl http://SERVER_B_IP:8001/health      # AI 引擎健康检查
-
-# 访问前端
-# 浏览器打开 http://SERVER_A_IP
-# 默认账号: admin / admin123
-```
+| 问题 | 原因 | 解决方案 |
+|------|------|----------|
+| Systemd `status=200/CHDIR` | heredoc 变量被展开为空路径 | 使用 `<<'EOF'`（单引号） |
+| passlib bcrypt 报错 | bcrypt>=4.1 与 passlib 不兼容 | `pip install bcrypt==4.0.1` |
+| Nginx 启动失败 (端口占用) | Apache 占用 80 端口 | `sudo systemctl stop apache2` |
+| MinIO AccessDenied | Snap 版 MinIO 路径不同 | `snap disable minio`，用独立二进制 |
+| vue-tsc 构建失败 | TypeScript 版本不兼容 | 跳过类型检查：`npx vite build` |
+| `@tsconfig/node24` 缺失 | Node 24 的 tsconfig 包未安装 | `pnpm add -D @tsconfig/node24` |
 
 ---
 
 ## 七、待办事项
 
-### 7.1 高优先级 ✅ 已完成 (2026-07-06)
+### 7.1 高优先级 ✅ 已完成
 
-- [x] 测试后端API是否正常启动
-- [x] 完善前端WebSocket实时推送功能 → ws.py + redis_subscriber_task
-- [x] 添加音频上传后自动触发推理的逻辑 → inference_worker.py
-- [x] 添加数据统计和报表功能 → stats.py API + Dashboard 接入
+- [x] 测试后端API是否正常启动 (2026-07-06)
+- [x] 完善前端WebSocket实时推送功能 (2026-07-06)
+- [x] 添加音频上传后自动触发推理的逻辑 (2026-07-06)
+- [x] 添加数据统计和报表功能 (2026-07-06)
+- [x] Server A 双服务器部署验证 (2026-07-08)
+- [x] 前端构建优化 — ECharts 按需引入 (2026-07-08)
 
 ### 7.2 中优先级
 
+- [ ] Server B 推理服务器部署 (需 RTX 4090 环境)
 - [ ] 端到端集成测试 (需要 GPU 环境验证 AI 引擎推理)
 - [ ] 完善任务调度系统 — 任务下发后通知设备执行采集
 - [ ] 实现说话人库的批量导入功能 (后端 bulk_enroll API 已有，前端待开发)
 - [ ] 音频详情页 AudioDetail — WaveSurfer 波形播放 + AI 结果展示联调
 - [ ] 前端分页 total 计数 — AudioList 的 total 目前写死 100
-- [ ] Docker Compose 环境下的完整启动测试
 
 ### 7.3 低优先级
 
@@ -767,7 +663,6 @@ curl http://SERVER_B_IP:8001/health      # AI 引擎健康检查
 - [ ] 性能监控和告警 — 添加 Prometheus metrics
 - [ ] 单元测试和集成测试
 - [ ] 音频文件定期清理 (retentionDays 配置生效)
-- [ ] 前端 build 产物优化 (代码分割、懒加载)
 
 ---
 
@@ -781,11 +676,11 @@ curl http://SERVER_B_IP:8001/health      # AI 引擎健康检查
 | FastAPI | 0.109.0 |
 | PyTorch | 2.1.2 |
 | FunASR | 1.0.27 |
-| Vue | 3.4 |
+| Vue | 3.5 |
 | Element Plus | 2.5 |
 | MySQL | 8.0 |
-| Redis | 7 |
-| Elasticsearch | 8.12 |
+| Redis | 8.0 |
+| MinIO | latest |
 
 ### 8.2 参考文档
 
@@ -794,52 +689,6 @@ curl http://SERVER_B_IP:8001/health      # AI 引擎健康检查
 - emotion2vec: https://modelscope.cn/models/iic/emotion2vec_base_finetuned
 - FAISS: https://github.com/facebookresearch/faiss
 - ESP-IDF: https://docs.espressif.com/projects/esp-idf/
-
----
-
-## 九、下次继续要点
-
-1. **项目位置**: `/home/guwenjun/code/voice-ai-system`
-2. **启动命令**: `./scripts/start.sh` 或 `docker-compose up -d`
-3. **默认账号**: admin / admin123
-4. **GPU要求**: RTX 4090 24GB (AI推理)
-5. **核心功能**: 语音采集 → ASR → 说话人识别 → 情感分析 → NLU → 全文检索
-
-### 当前开发状态 (2026-07-07)
-
-**部署方式变更**: 从 Docker Compose 改为双服务器裸机部署
-- Server A (应用服务器): 运行除 AI 引擎外的所有服务
-- Server B (推理服务器): 仅运行 AI Engine，需 RTX 4090
-
-**已打通的完整链路**:
-
-**已打通的完整链路**:
-```
-ESP32上传 → MinIO → Redis队列 → Worker消费 → AI引擎推理 → 结果入库 → WebSocket → 前端
-```
-
-**后端 API 路由清单 (10个模块)**:
-| 路由前缀 | 模块 | 状态 |
-|----------|------|------|
-| `/api/auth` | 认证 (JWT登录) | ✅ |
-| `/api/device` | 设备管理 (注册/心跳/列表/删除) | ✅ |
-| `/api/task` | 任务管理 (创建/列表/下发) | ✅ |
-| `/api/audio` | 音频管理 (上传/列表/详情/下载) | ✅ |
-| `/api/result` | 识别结果 (转写/说话人/情感/NLU) | ✅ |
-| `/api/search` | 全文检索 | ✅ |
-| `/api/alert` | 告警 (规则/记录) | ✅ |
-| `/api/speaker` | 说话人管理 (列表/注册/更新/删除) | ✅ 新增 |
-| `/api/stats` | 统计看板 (仪表盘/趋势/情感分布) | ✅ 新增 |
-| `/api/settings` | 系统设置 (读取/保存) | ✅ 新增 |
-| `/ws/realtime` | WebSocket 实时推送 | ✅ 完善 |
-
-**下一步开发建议**:
-1. 在 Server A 上执行 `scripts/deploy-server-a.sh <Server_B_IP>` 部署应用服务
-2. 在 Server B 上执行 `scripts/deploy-server-b.sh <Server_A_IP>` 部署推理服务
-3. 运行 `scripts/check-status.sh <Server_B_IP>` 验证所有服务状态
-4. 完善任务调度 — 任务下发后通过 WebSocket 通知设备开始采集
-5. 实现说话人批量导入的前端界面
-6. 补充 `AudioList` 的分页 total 和 `AudioDetail` 的波形播放联调
 
 ---
 

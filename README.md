@@ -14,11 +14,10 @@
 │  └──────────┘  └───────────┘  └──────────┘             │
 │       │              │                                   │
 │       ▼              ▼                                   │
-│  ┌──────────┐  ┌───────────────────┐  ┌──────────┐│
-│  │  MySQL   │  │   Redis Stack     │  │  MinIO   ││
-│  │  :3306   │  │  :6379            │  │ :9000    ││
-│  └──────────┘  │  (含RediSearch)   │  └──────────┘│
-│                └───────────────────┘               │
+│  ┌──────────┐  ┌───────────┐  ┌──────────┐             │
+│  │  MySQL   │  │   Redis   │  │  MinIO   │             │
+│  │  :3306   │  │   :6379   │  │ :9000    │             │
+│  └──────────┘  └───────────┘  └──────────┘             │
 │                     │                                   │
 │                     │ Redis队列                          │
 │                     ▼                                   │
@@ -31,16 +30,16 @@
                                                   │
 ┌─────────────────────────────────────────────────┼───────┐
 │              Server B — 推理服务器 (RTX 4090)     │       │
-│                                                  ▼      │
+│                                                  ▼       │
 │  ┌──────────────────────────────────────────────────┐   │
-│  │              AI Engine (FastAPI :8001)           │   │
-│  │  ┌──────────┐ ┌──────────┐ ┌────────┐ ┌────────┐ │   │
-│  │  │FunASR    │ │ CAM++    │ │emotion │ │  NLU   │ │   │
-│  │  │Paraformer│ │ 说话人    │ │2vec    │ │ 关键词  │ │   │
-│  │  └──────────┘ └──────────┘ └────────┘ └────────┘ │   │
+│  │              AI Engine (FastAPI :8001)             │   │
+│  │  ┌──────────┐ ┌──────────┐ ┌────────┐ ┌────────┐│   │
+│  │  │FunASR    │ │ CAM++    │ │emotion │ │  NLU   ││   │
+│  │  │Paraformer│ │ 说话人    │ │2vec    │ │ 关键词  ││   │
+│  │  └──────────┘ └──────────┘ └────────┘ └────────┘│   │
 │  └──────────────────────────────────────────────────┘   │
 │           │                                             │
-│           │ 从 Server A 的 MinIO 下载音频                 │
+│           │ 从 Server A 的 MinIO 下载音频                │
 │           ▼                                             │
 │     Server_A_IP:9000 (MinIO)                            │
 └─────────────────────────────────────────────────────────┘
@@ -54,14 +53,14 @@
 
 ## 技术栈
 
-| 层级     | 技术                                       |
-| -------- | ------------------------------------------ |
-| 边缘端   | ESP-IDF (C), Opus 编码, HTTP 上传          |
-| 后端服务 | Python 3.11, FastAPI, SQLAlchemy, Redis    |
-| AI 推理  | PyTorch, FunASR, CAM++, emotion2vec, FAISS |
-| 数据库   | MySQL 8.0, Redis Stack (含 RediSearch), MinIO |
-| 前端     | Vue 3, TypeScript, Element Plus, ECharts   |
-| 部署     | 双服务器裸机部署, Nginx, Systemd           |
+| 层级     | 技术                                          |
+| -------- | --------------------------------------------- |
+| 边缘端   | ESP-IDF (C), Opus 编码, HTTP 上传             |
+| 后端服务 | Python 3.11, FastAPI, SQLAlchemy, Redis       |
+| AI 推理  | PyTorch, FunASR, CAM++, emotion2vec, FAISS    |
+| 数据库   | MySQL 8.0, Redis 8.0, MinIO                   |
+| 前端     | Vue 3, TypeScript, Element Plus, ECharts      |
+| 部署     | 双服务器裸机部署, Nginx, Systemd              |
 
 ## 快速开始
 
@@ -77,31 +76,27 @@
 ### 2. 部署 Server A (应用服务器)
 
 ```bash
-# 登录 Server A
 cd /home/guwenjun/code/voice-ai-system
-
-# 一键部署 (参数为 Server B 的 IP)
 chmod +x scripts/deploy-server-a.sh
-./scripts/deploy-server-a.sh 192.168.1.100
+./scripts/deploy-server-a.sh <Server_B_IP>
 ```
 
 该脚本自动安装并配置:
 
 - MySQL 8.0 + 建表
-- Redis Stack Server (含 RediSearch 全文检索模块)
+- Redis 8.0
 - MinIO (对象存储)
 - FastAPI 后端 (Uvicorn + Systemd)
 - Vue3 前端构建 + Nginx 反向代理
 
+> **注意**: 脚本中 heredoc 使用 `<<'EOF'`（单引号）防止变量展开为空。详见 [部署踩坑记录](docs/project-plan.md#66-常见部署问题)。
+
 ### 3. 部署 Server B (推理服务器)
 
 ```bash
-# 登录 Server B
 cd /home/guwenjun/code/voice-ai-system
-
-# 一键部署 (参数为 Server A 的 IP)
 chmod +x scripts/deploy-server-b.sh
-./scripts/deploy-server-b.sh 192.168.1.50
+./scripts/deploy-server-b.sh <Server_A_IP>
 ```
 
 该脚本自动安装并配置:
@@ -114,9 +109,8 @@ chmod +x scripts/deploy-server-b.sh
 ### 4. 验证部署
 
 ```bash
-# 在 Server A 上执行
 chmod +x scripts/check-status.sh
-./scripts/check-status.sh 192.168.1.100
+./scripts/check-status.sh <Server_B_IP>
 ```
 
 预期输出:
@@ -124,13 +118,12 @@ chmod +x scripts/check-status.sh
 ```
 📦 Server A (本机) 服务:
   ✓ MySQL: 运行中
-  ✓ Redis Stack: 运行中 (PONG)
+  ✓ Redis: 运行中 (PONG)
   ✓ MinIO: 运行中
-  ✓ RediSearch 模块: 已加载
   ✓ FastAPI 后端: 运行中
   ✓ Nginx: 运行中
 
-🧠 Server B (192.168.1.100) 服务:
+🧠 Server B (<Server_B_IP>) 服务:
   ✓ AI Engine: 运行中
 ```
 
@@ -157,10 +150,23 @@ cd server
 python3.11 -m venv venv-server
 source venv-server/bin/activate
 pip install -r requirements.txt
+pip install bcrypt==4.0.1  # passlib 兼容
 
-# 创建 .env (参考 .env.example)
-cp ../.env.example .env
-# 编辑 .env, 设置 AI_ENGINE_URL=http://SERVER_B_IP:8001
+# 创建 .env
+cat > .env <<'EOF'
+MYSQL_HOST=localhost
+MYSQL_PORT=3306
+MYSQL_USER=voice_user
+MYSQL_PASSWORD=voice_pass
+MYSQL_DATABASE=voice_ai
+REDIS_HOST=localhost
+REDIS_PORT=6379
+MINIO_ENDPOINT=localhost:9000
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin
+AI_ENGINE_URL=http://SERVER_B_IP:8001
+SECRET_KEY=dev-secret-key
+EOF
 
 uvicorn app.main:app --reload --port 8000
 ```
@@ -174,11 +180,13 @@ source venv-ai/bin/activate
 pip install -r requirements.txt
 
 # 创建 .env
-echo "MINIO_ENDPOINT=SERVER_A_IP:9000" > .env
-echo "MINIO_ACCESS_KEY=minioadmin" >> .env
-echo "MINIO_SECRET_KEY=minioadmin" >> .env
-echo "MINIO_BUCKET=voice-audio" >> .env
-echo "CUDA_VISIBLE_DEVICES=0" >> .env
+cat > .env <<'EOF'
+MINIO_ENDPOINT=SERVER_A_IP:9000
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin
+MINIO_BUCKET=voice-audio
+CUDA_VISIBLE_DEVICES=0
+EOF
 
 uvicorn main:app --reload --port 8001
 ```
@@ -208,7 +216,7 @@ voice-ai-system/
 │   │   ├── api/               # API 路由 (10个模块)
 │   │   ├── models/            # 数据库模型
 │   │   ├── services/          # 业务逻辑 (Worker)
-│   │   └── core/              # 核心配置
+│   │   └── core/              # 核心配置 (config, redis, search, security)
 │   ├── requirements.txt
 │   └── Dockerfile
 ├── ai_engine/                  # AI 推理引擎
@@ -228,13 +236,10 @@ voice-ai-system/
 │   └── package.json
 ├── esp32-firmware/             # ESP32 固件
 ├── scripts/
-│   ├── deploy-server-a.sh     # Server A 部署脚本 ✨
-│   ├── deploy-server-b.sh     # Server B 部署脚本 ✨
-│   ├── check-status.sh        # 服务状态检查 ✨
-│   ├── init-db.sql            # 数据库初始化
-│   ├── start.sh               # 旧Docker启动脚本
-│   └── stop.sh                # 旧Docker停止脚本
-├── docker-compose.yml          # (已弃用, 改用双服务器部署)
+│   ├── deploy-server-a.sh     # Server A 部署脚本
+│   ├── deploy-server-b.sh     # Server B 部署脚本
+│   ├── check-status.sh        # 服务状态检查
+│   └── init-db.sql            # 数据库初始化
 ├── docs/project-plan.md        # 详细项目文档
 └── README.md
 ```
@@ -257,10 +262,20 @@ voice-ai-system/
 | Nginx         | 80   | Server A | 前端 + API 反向代理         |
 | FastAPI       | 8000 | Server A | 后端 API (仅 Nginx 代理)    |
 | MySQL         | 3306 | Server A | 数据库 (仅本机)             |
-| Redis Stack   | 6379 | Server A | 缓存/队列/全文检索 (仅本机) |
+| Redis         | 6379 | Server A | 缓存/队列 (仅本机)          |
 | MinIO         | 9000 | Server A | 对象存储 (内网)             |
 | MinIO Console | 9001 | Server A | 管理控制台                  |
 | AI Engine     | 8001 | Server B | 推理服务 (仅 Server A 调用) |
+
+## 常见问题
+
+| 问题 | 原因 | 解决 |
+|------|------|------|
+| Systemd `status=200/CHDIR` | heredoc 变量展开为空 | 使用 `<<'EOF'` 单引号 |
+| passlib bcrypt 报错 | bcrypt>=4.1 不兼容 | `pip install bcrypt==4.0.1` |
+| Nginx 端口 80 占用 | Apache 占用 | `sudo systemctl stop apache2` |
+| MinIO AccessDenied | Snap 版冲突 | `snap disable minio`，用独立二进制 |
+| vue-tsc 构建失败 | TS 版本不兼容 | 用 `npx vite build` 跳过类型检查 |
 
 ## License
 

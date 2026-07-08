@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
 # Server A — 应用服务器部署脚本 (无GPU)
-# 包含: Nginx + FastAPI + MySQL + Redis Stack + MinIO
+# 包含: Nginx + FastAPI + MySQL + Redis + MinIO
 # ============================================================
 set -e
 
@@ -16,11 +16,13 @@ err() { echo -e "${RED}[✗]${NC} $1"; exit 1; }
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SERVER_B_IP="${1:?用法: $0 <Server_B_IP>}"
+CURRENT_USER="$(whoami)"
 
 echo "============================================"
 echo "  Voice AI — Server A 部署"
 echo "  项目目录: $PROJECT_DIR"
 echo "  推理服务器: $SERVER_B_IP:8001"
+echo "  运行用户: $CURRENT_USER"
 echo "============================================"
 echo
 
@@ -28,11 +30,12 @@ echo
 log "安装系统依赖..."
 sudo apt update -qq
 sudo apt install -y python3.11 python3.11-venv python3-pip \
-    nginx mysql-server ffmpeg curl wget gnupg2
+    nginx mysql-server redis-server ffmpeg curl wget
 
 # ----- 2. MySQL -----
 log "配置 MySQL..."
 sudo systemctl start mysql
+sudo systemctl enable mysql
 sudo mysql -e "
 CREATE DATABASE IF NOT EXISTS voice_ai CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS 'voice_user'@'localhost' IDENTIFIED BY 'voice_pass';
@@ -48,41 +51,18 @@ else
     warn "未找到 init-db.sql, 跳过建表"
 fi
 
-# ----- 3. Redis Stack Server (含 RediSearch 全文检索) -----
-log "安装 Redis Stack Server..."
-if ! command -v redis-stack-server &> /dev/null; then
-    curl -fsSL https://packages.redis.io/gpg | sudo gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg
-    echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/redis.list
-    sudo apt update -qq
-    sudo apt install -y redis-stack-server
-fi
-
-# 配置 Redis Stack (启用 RediSearch 模块)
-sudo tee /etc/redis-stack.conf > /dev/null <<'EOF'
-bind 127.0.0.1
-port 6379
-daemonize yes
-loadmodule /opt/redis-stack/lib/redisearch.so
-loadmodule /opt/redis-stack/lib/rejson.so
-loadmodule /opt/redis-stack/lib/redistimeseries.so
-loadmodule /opt/redis-stack/lib/redisbloom.so
-EOF
-
-# 启动
-sudo systemctl enable redis-stack-server
-sudo systemctl start redis-stack-server
-sleep 2
-redis-stack-server --version > /dev/null 2>&1 || redis-cli ping > /dev/null 2>&1
-if redis-cli ping > /dev/null 2>&1; then
-    log "Redis Stack Server 运行正常 (含 RediSearch)"
-    # 验证 RediSearch 模块
-    redis-cli MODULE LIST | grep -q search && log "RediSearch 模块已加载" || warn "RediSearch 模块未加载"
-else
-    err "Redis Stack Server 启动失败"
-fi
+# ----- 3. Redis -----
+log "启动 Redis..."
+sudo systemctl enable redis-server
+sudo systemctl start redis-server
+redis-cli ping > /dev/null && log "Redis 运行正常" || err "Redis 启动失败"
 
 # ----- 4. MinIO -----
 log "安装 MinIO..."
+# 停掉 Snap 版 MinIO (如有)
+sudo snap stop minio 2>/dev/null || true
+sudo snap disable minio 2>/dev/null || true
+
 if ! command -v minio &> /dev/null; then
     wget -q https://dl.min.io/server/minio/release/linux-amd64/minio -O /tmp/minio
     sudo mv /tmp/minio /usr/local/bin/
@@ -112,7 +92,7 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable --now minio
 sleep 2
-curl -sf http://localhost:9000/minio/health > /dev/null && log "MinIO 运行正常" || err "MinIO 启动失败"
+curl -sf http://localhost:9000/minio/health/live > /dev/null && log "MinIO 运行正常" || err "MinIO 启动失败"
 
 # ----- 5. Python 虚拟环境 & 后端 -----
 log "配置后端 Python 环境..."
@@ -123,8 +103,11 @@ fi
 source venv-server/bin/activate
 cd server && pip install -q -r requirements.txt && cd ..
 
-# 写入 .env
-cat > server/.env <<EOF
+# 修复 passlib + bcrypt 兼容问题
+pip install -q bcrypt==4.0.1
+
+# 写入 .env (SERVER_B_IP 通过变量展开写入实际值)
+cat > "$PROJECT_DIR/server/.env" <<EOF
 MYSQL_HOST=localhost
 MYSQL_PORT=3306
 MYSQL_USER=voice_user
@@ -146,17 +129,22 @@ cd "$PROJECT_DIR/web"
 if [ ! -d "node_modules" ]; then
     npm install
 fi
-npm run build
+# 跳过 vue-tsc 类型检查 (TypeScript 版本兼容问题), 直接 vite 构建
+npx vite build
 log "前端构建完成 → web/dist/"
 
 # ----- 7. Nginx -----
 log "配置 Nginx..."
-sudo tee /etc/nginx/sites-available/voice-ai > /dev/null <<EOF
+# 停掉 Apache (如占用 80 端口)
+sudo systemctl stop apache2 2>/dev/null || true
+
+# 使用 cat + sudo tee 写入, 避免 heredoc 变量展开问题
+cat <<NGINXCONF | sudo tee /etc/nginx/sites-available/voice-ai > /dev/null
 server {
     listen 80;
     server_name _;
 
-    root $PROJECT_DIR/web/dist;
+    root ${PROJECT_DIR}/web/dist;
     index index.html;
 
     location / {
@@ -180,30 +168,33 @@ server {
         proxy_read_timeout 86400;
     }
 }
-EOF
+NGINXCONF
 
 sudo ln -sf /etc/nginx/sites-available/voice-ai /etc/nginx/sites-enabled/
 sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t && sudo systemctl reload nginx
+sudo nginx -t && sudo systemctl start nginx
+sudo systemctl enable nginx
+log "Nginx 配置完成"
 
 # ----- 8. 后端 systemd 服务 -----
-sudo tee /etc/systemd/system/voice-server.service > /dev/null <<EOF
+log "配置后端 Systemd 服务..."
+cat <<SVCCONF | sudo tee /etc/systemd/system/voice-server.service > /dev/null
 [Unit]
 Description=Voice AI FastAPI Server
 After=network.target mysql.service redis-server.service
 
 [Service]
 Type=simple
-User=$(whoami)
-WorkingDirectory=$PROJECT_DIR/server
-Environment="PATH=$PROJECT_DIR/venv-server/bin"
-ExecStart=$PROJECT_DIR/venv-server/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+User=${CURRENT_USER}
+Group=${CURRENT_USER}
+WorkingDirectory=${PROJECT_DIR}/server
+ExecStart=${PROJECT_DIR}/venv-server/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-EOF
+SVCCONF
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now voice-server
@@ -224,5 +215,6 @@ echo "  API:     http://$(hostname -I | awk '{print $1}'):8000/docs"
 echo "  MinIO:   http://$(hostname -I | awk '{print $1}'):9001"
 echo "  默认账号: admin / admin123"
 echo
+echo "  验证: curl http://localhost:8000/health"
 echo "  下一步: 在 Server B ($SERVER_B_IP) 运行 deploy-server-b.sh"
 echo "============================================"

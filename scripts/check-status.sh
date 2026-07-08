@@ -30,40 +30,22 @@ else
     fail "MySQL: 未运行"
 fi
 
-# Redis Stack (含 RediSearch)
+# Redis
 if redis-cli ping > /dev/null 2>&1; then
-    ok "Redis Stack: 运行中 (PONG)"
-    if redis-cli MODULE LIST 2>/dev/null | grep -q search; then
-        ok "RediSearch 模块: 已加载"
-    else
-        warn "RediSearch 模块: 未加载"
-    fi
+    ok "Redis: 运行中 (PONG)"
 else
-    fail "Redis Stack: 未运行"
+    fail "Redis: 未运行"
 fi
 
 # MinIO
-if curl -sf http://localhost:9000/minio/health > /dev/null 2>&1; then
+if curl -sf http://localhost:9000/minio/health/live > /dev/null 2>&1; then
     ok "MinIO: 运行中"
 else
     fail "MinIO: 未运行"
 fi
 
-# Elasticsearch
-if curl -sf http://localhost:9200/_cluster/health > /dev/null 2>&1; then
-    ES_STATUS=$(curl -sf http://localhost:9200/_cluster/health | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])" 2>/dev/null)
-    if [ "$ES_STATUS" = "green" ] || [ "$ES_STATUS" = "yellow" ]; then
-        ok "Elasticsearch: 运行中 ($ES_STATUS)"
-    else
-        warn "Elasticsearch: 状态异常 ($ES_STATUS)"
-    fi
-else
-    fail "Elasticsearch: 未运行"
-fi
-
 # FastAPI Backend
-# (Elasticsearch 已替换为 Redis Stack RediSearch，无需单独检查)
-if curl -sf http://localhost:8000/docs > /dev/null 2>&1; then
+if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
     ok "FastAPI 后端: 运行中"
 else
     fail "FastAPI 后端: 未运行"
@@ -72,6 +54,13 @@ fi
 # Nginx
 if systemctl is-active --quiet nginx 2>/dev/null; then
     ok "Nginx: 运行中"
+    # 检查前端是否可访问
+    HTTP_CODE=$(curl -sf -o /dev/null -w "%{http_code}" http://localhost 2>/dev/null)
+    if [ "$HTTP_CODE" = "200" ]; then
+        ok "前端页面: 可访问 (HTTP $HTTP_CODE)"
+    else
+        warn "前端页面: HTTP $HTTP_CODE"
+    fi
 else
     fail "Nginx: 未运行"
 fi

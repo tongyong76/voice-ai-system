@@ -120,7 +120,21 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted, nextTick } from 'vue'
-import * as echarts from 'echarts'
+// ECharts 按需引入 (减少 ~600KB)
+import * as echarts from 'echarts/core'
+import { LineChart, PieChart } from 'echarts/charts'
+import {
+  TitleComponent, TooltipComponent, LegendComponent,
+  GridComponent, DatasetComponent, TransformComponent
+} from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
+
+echarts.use([
+  LineChart, PieChart,
+  TitleComponent, TooltipComponent, LegendComponent,
+  GridComponent, DatasetComponent, TransformComponent,
+  CanvasRenderer
+])
 import dayjs from 'dayjs'
 import { statsApi, type RecentAudio, type RecentAlert } from '@/api/stats'
 
