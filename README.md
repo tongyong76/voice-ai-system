@@ -6,7 +6,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│              Server A — 应用服务器 (无GPU)                │
+│        Server A — 192.168.31.45 (应用服务器, 无GPU)       │
 │                                                         │
 │  ┌──────────┐  ┌───────────┐  ┌──────────┐             │
 │  │  Nginx   │  │  FastAPI   │  │  Vue3    │             │
@@ -26,10 +26,10 @@
 │              └─────────────┘                    │       │
 └─────────────────────────────────────────────────┼───────┘
                                                   │
-                                          http://Server_B_IP:8001
+                                     http://192.168.31.4:8001
                                                   │
 ┌─────────────────────────────────────────────────┼───────┐
-│              Server B — 推理服务器 (RTX 4090)     │       │
+│          Server B — 192.168.31.4 (推理服务器, RTX 4090)   │
 │                                                  ▼       │
 │  ┌──────────────────────────────────────────────────┐   │
 │  │              AI Engine (FastAPI :8001)             │   │
@@ -41,13 +41,13 @@
 │           │                                             │
 │           │ 从 Server A 的 MinIO 下载音频                │
 │           ▼                                             │
-│     Server_A_IP:9000 (MinIO)                            │
+│     192.168.31.45:9000 (MinIO)                          │
 └─────────────────────────────────────────────────────────┘
                                                   ▲
 ┌─────────────────────────────────────────────────┼───────┐
 │              XIAO ESP32S3 + ReSpeaker Lite (200台)      │
 │   麦克风采集  →  Opus编码  →  Wi-Fi HTTP 上传              │
-│   目标: http://Server_A_IP:8000/api/audio/upload         │
+│   目标: http://192.168.31.45:8000/api/audio/upload       │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -57,28 +57,28 @@
 | -------- | --------------------------------------------- |
 | 边缘端   | ESP-IDF (C), Opus 编码, HTTP 上传             |
 | 后端服务 | Python 3.11, FastAPI, SQLAlchemy, Redis       |
-| AI 推理  | PyTorch, FunASR, CAM++, emotion2vec, FAISS    |
+| AI 推理  | PyTorch 2.5.1, FunASR 1.3.14, CAM++, emotion2vec, FAISS |
 | 数据库   | MySQL 8.0, Redis 8.0, MinIO                   |
 | 前端     | Vue 3, TypeScript, Element Plus, ECharts      |
-| 部署     | 双服务器裸机部署, Nginx, Systemd              |
+| 部署     | 双服务器裸机部署, Nginx, Systemd, Miniconda   |
 
 ## 快速开始
 
 ### 1. 服务器规划
 
-| 服务器       | 用途                            | 最低配置                         |
-| ------------ | ------------------------------- | -------------------------------- |
-| **Server A** | 应用服务器 (前端 + 后端 + 存储) | 8核 CPU, 32GB RAM, 1TB SSD       |
-| **Server B** | 推理服务器 (AI引擎)             | 8核 CPU, 32GB RAM, RTX 4090 24GB |
+| 服务器         | IP            | 用途                            | 最低配置                         |
+| -------------- | ------------- | ------------------------------- | -------------------------------- |
+| **Server A**   | 192.168.31.45 | 应用服务器 (前端 + 后端 + 存储) | 8核 CPU, 32GB RAM, 1TB SSD       |
+| **Server B**   | 192.168.31.4  | 推理服务器 (AI引擎)             | 8核 CPU, 32GB RAM, RTX 4090 24GB |
 
-两台服务器需内网互通。
+两台服务器需内网互通。Python 环境统一使用 Miniconda，conda 环境名 `voice`。
 
 ### 2. 部署 Server A (应用服务器)
 
 ```bash
 cd /home/guwenjun/code/voice-ai-system
 chmod +x scripts/deploy-server-a.sh
-./scripts/deploy-server-a.sh <Server_B_IP>
+./scripts/deploy-server-a.sh 192.168.31.4
 ```
 
 该脚本自动安装并配置:
@@ -89,28 +89,29 @@ chmod +x scripts/deploy-server-a.sh
 - FastAPI 后端 (Uvicorn + Systemd)
 - Vue3 前端构建 + Nginx 反向代理
 
-> **注意**: 脚本中 heredoc 使用 `<<'EOF'`（单引号）防止变量展开为空。详见 [部署踩坑记录](docs/project-plan.md#66-常见部署问题)。
-
 ### 3. 部署 Server B (推理服务器)
 
 ```bash
 cd /home/guwenjun/code/voice-ai-system
 chmod +x scripts/deploy-server-b.sh
-./scripts/deploy-server-b.sh <Server_A_IP>
+./scripts/deploy-server-b.sh 192.168.31.45
 ```
 
 该脚本自动安装并配置:
 
 - CUDA 环境检查
-- Python 3.11 + 虚拟环境
+- Miniconda conda 环境 (`voice`)
+- PyTorch CUDA + AI 引擎依赖
 - AI 模型预下载 (~5GB)
 - AI Engine Systemd 服务
+
+> **注意**: Server B 的 AI Engine 从项目根目录启动，模块路径为 `ai_engine.main:app`。
 
 ### 4. 验证部署
 
 ```bash
-chmod +x scripts/check-status.sh
-./scripts/check-status.sh <Server_B_IP>
+# 在 Server A 上
+./scripts/check-status.sh 192.168.31.4
 ```
 
 预期输出:
@@ -122,19 +123,20 @@ chmod +x scripts/check-status.sh
   ✓ MinIO: 运行中
   ✓ FastAPI 后端: 运行中
   ✓ Nginx: 运行中
+  ✓ 前端页面: 可访问 (HTTP 200)
 
-🧠 Server B (<Server_B_IP>) 服务:
+🧠 Server B (192.168.31.4) 服务:
   ✓ AI Engine: 运行中
 ```
 
 ### 5. 访问系统
 
-| 服务         | 地址                           |
-| ------------ | ------------------------------ |
-| 前端         | `http://SERVER_A_IP`           |
-| API 文档     | `http://SERVER_A_IP:8000/docs` |
-| MinIO 控制台 | `http://SERVER_A_IP:9001`      |
-| AI 引擎文档  | `http://SERVER_B_IP:8001/docs` |
+| 服务         | 地址                                |
+| ------------ | ----------------------------------- |
+| 前端         | `http://192.168.31.45`              |
+| API 文档     | `http://192.168.31.45:8000/docs`    |
+| MinIO 控制台 | `http://192.168.31.45:9001`         |
+| AI 引擎文档  | `http://192.168.31.4:8001/docs`     |
 
 ### 6. 默认账号
 
@@ -146,11 +148,10 @@ chmod +x scripts/check-status.sh
 ### 后端开发 (Server A)
 
 ```bash
+conda activate voice
 cd server
-python3.11 -m venv venv-server
-source venv-server/bin/activate
 pip install -r requirements.txt
-pip install bcrypt==4.0.1  # passlib 兼容
+pip install bcrypt==4.0.1
 
 # 创建 .env
 cat > .env <<'EOF'
@@ -164,7 +165,7 @@ REDIS_PORT=6379
 MINIO_ENDPOINT=localhost:9000
 MINIO_ACCESS_KEY=minioadmin
 MINIO_SECRET_KEY=minioadmin
-AI_ENGINE_URL=http://SERVER_B_IP:8001
+AI_ENGINE_URL=http://192.168.31.4:8001
 SECRET_KEY=dev-secret-key
 EOF
 
@@ -174,21 +175,20 @@ uvicorn app.main:app --reload --port 8000
 ### AI 引擎开发 (Server B)
 
 ```bash
-cd ai_engine
-python3.11 -m venv venv-ai
-source venv-ai/bin/activate
-pip install -r requirements.txt
+conda activate voice
+cd /home/guwenjun/code/voice-ai-system
 
 # 创建 .env
-cat > .env <<'EOF'
-MINIO_ENDPOINT=SERVER_A_IP:9000
+cat > ai_engine/.env <<'EOF'
+MINIO_ENDPOINT=192.168.31.45:9000
 MINIO_ACCESS_KEY=minioadmin
 MINIO_SECRET_KEY=minioadmin
 MINIO_BUCKET=voice-audio
 CUDA_VISIBLE_DEVICES=0
 EOF
 
-uvicorn main:app --reload --port 8001
+# 从项目根目录启动（重要：不能从 ai_engine 目录启动）
+uvicorn ai_engine.main:app --reload --port 8001
 ```
 
 ### 前端开发
@@ -204,8 +204,8 @@ npm run dev
 
 启动服务后访问:
 
-- 后端 API: `http://SERVER_A_IP:8000/docs`
-- AI 引擎: `http://SERVER_B_IP:8001/docs`
+- 后端 API: `http://192.168.31.45:8000/docs`
+- AI 引擎: `http://192.168.31.4:8001/docs`
 
 ## 目录结构
 
@@ -217,8 +217,7 @@ voice-ai-system/
 │   │   ├── models/            # 数据库模型
 │   │   ├── services/          # 业务逻辑 (Worker)
 │   │   └── core/              # 核心配置 (config, redis, search, security)
-│   ├── requirements.txt
-│   └── Dockerfile
+│   └── requirements.txt
 ├── ai_engine/                  # AI 推理引擎
 │   ├── pipeline/              # 推理流水线
 │   │   ├── asr_engine.py      # FunASR 语音识别
@@ -226,8 +225,7 @@ voice-ai-system/
 │   │   ├── emotion_engine.py  # emotion2vec 情感分析
 │   │   └── nlu_engine.py      # NLU 关键词/意图
 │   ├── speaker_db/            # FAISS 说话人检索
-│   ├── requirements.txt
-│   └── Dockerfile
+│   └── requirements.txt
 ├── web/                        # Vue3 前端
 │   ├── src/
 │   │   ├── views/             # 页面 (10个)
@@ -237,7 +235,7 @@ voice-ai-system/
 ├── esp32-firmware/             # ESP32 固件
 ├── scripts/
 │   ├── deploy-server-a.sh     # Server A 部署脚本
-│   ├── deploy-server-b.sh     # Server B 部署脚本
+│   ├── deploy-server-b.sh     # Server B 部署脚本 (Miniconda)
 │   ├── check-status.sh        # 服务状态检查
 │   └── init-db.sql            # 数据库初始化
 ├── docs/project-plan.md        # 详细项目文档
@@ -274,8 +272,12 @@ voice-ai-system/
 | Systemd `status=200/CHDIR` | heredoc 变量展开为空 | 使用 `<<'EOF'` 单引号 |
 | passlib bcrypt 报错 | bcrypt>=4.1 不兼容 | `pip install bcrypt==4.0.1` |
 | Nginx 端口 80 占用 | Apache 占用 | `sudo systemctl stop apache2` |
+| Nginx 500 Permission denied | www-data 无权访问 home | `chmod 755 /home/用户名` |
 | MinIO AccessDenied | Snap 版冲突 | `snap disable minio`，用独立二进制 |
 | vue-tsc 构建失败 | TS 版本不兼容 | 用 `npx vite build` 跳过类型检查 |
+| faiss-gpu 版本冲突 | torch CUDA 版本不兼容 | 改用 `faiss-cpu` |
+| AI Engine 相对导入失败 | 目录不对 | 从项目根目录运行 `uvicorn ai_engine.main:app` |
+| emotion2vec 加载失败 | modelscope 版本问题 | 用 `funasr.AutoModel` 加载 |
 
 ## License
 

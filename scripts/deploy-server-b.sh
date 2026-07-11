@@ -2,6 +2,7 @@
 # ============================================================
 # Server B — 推理服务器部署脚本 (RTX 4090)
 # 包含: AI Engine (FunASR + CAM++ + emotion2vec + NLU)
+# 环境: Miniconda, conda 环境名 voice
 # ============================================================
 set -e
 
@@ -35,21 +36,30 @@ log "GPU 检测通过"
 # ----- 2. 系统依赖 -----
 log "安装系统依赖..."
 sudo apt update -qq
-sudo apt install -y python3.11 python3.11-venv python3-pip \
-    libsndfile1 ffmpeg curl
+sudo apt install -y libsndfile1 ffmpeg curl
 
-# ----- 3. Python 虚拟环境 -----
-log "配置 Python 环境..."
-cd "$PROJECT_DIR"
-if [ ! -d "venv-ai" ]; then
-    python3.11 -m venv venv-ai
-fi
-source venv-ai/bin/activate
-cd ai_engine && pip install -q -r requirements.txt && cd ..
+# ----- 3. Conda 环境 -----
+log "配置 Conda 环境..."
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate voice
+
+# 安装 PyTorch CUDA 版本
+log "安装 PyTorch..."
+pip install -q torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
+
+# 安装 AI 引擎依赖
+log "安装 AI 引擎依赖..."
+cd "$PROJECT_DIR/ai_engine"
+# 修改 requirements.txt 中的版本锁定
+sed -i 's/faiss-gpu==.*/faiss-cpu/' requirements.txt
+sed -i 's/funasr==.*/funasr/' requirements.txt
+sed -i 's/modelscope==.*/modelscope/' requirements.txt
+sed -i '/^torch/d' requirements.txt
+pip install -q -r requirements.txt
 log "Python 依赖安装完成"
 
 # ----- 4. 环境变量 -----
-cat > ai_engine/.env <<EOF
+cat > "$PROJECT_DIR/ai_engine/.env" <<EOF
 MINIO_ENDPOINT=${SERVER_A_IP}:9000
 MINIO_ACCESS_KEY=minioadmin
 MINIO_SECRET_KEY=minioadmin
@@ -61,9 +71,7 @@ log "AI Engine .env 已生成 (MinIO → $SERVER_A_IP:9000)"
 # ----- 5. 预下载模型 -----
 log "预下载 AI 模型 (首次约5GB, 请耐心等待)..."
 cd "$PROJECT_DIR/ai_engine"
-source "$PROJECT_DIR/venv-ai/bin/activate"
 python -c "
-import sys
 print('下载 FunASR Paraformer 模型...')
 from funasr import AutoModel
 AutoModel(model='iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch')
@@ -82,7 +90,10 @@ print('所有模型预下载完成!')
 " || warn "部分模型下载失败, 首次启动时会自动重试"
 
 # ----- 6. systemd 服务 -----
-sudo tee /etc/systemd/system/voice-ai-engine.service > /dev/null <<EOF
+UVICORN_PATH=$(conda run -n voice which uvicorn)
+log "uvicorn 路径: $UVICORN_PATH"
+
+cat <<SVCCONF | sudo tee /etc/systemd/system/voice-ai-engine.service > /dev/null
 [Unit]
 Description=Voice AI Inference Engine (GPU)
 After=network.target
@@ -90,18 +101,16 @@ After=network.target
 [Service]
 Type=simple
 User=$(whoami)
-WorkingDirectory=$PROJECT_DIR/ai_engine
-Environment="PATH=$PROJECT_DIR/venv-ai/bin"
+Group=$(whoami)
+WorkingDirectory=${PROJECT_DIR}/ai_engine
 Environment="CUDA_VISIBLE_DEVICES=0"
-ExecStart=$PROJECT_DIR/venv-ai/bin/uvicorn main:app --host 0.0.0.0 --port 8001
+ExecStart=${UVICORN_PATH} main:app --host 0.0.0.0 --port 8001
 Restart=always
 RestartSec=5
-# GPU 内存限制 (可选)
-# LimitMEMLOCK=infinity
 
 [Install]
 WantedBy=multi-user.target
-EOF
+SVCCONF
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now voice-ai-engine

@@ -10,7 +10,8 @@ class SpeakerEngine:
         model_name: str = "iic/speech_campplus_sv_zh-cn_16k-common",
         embedding_dim: int = 512,
     ):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        # 说话人模型用 CPU 即可（体积小，GPU 留给 ASR）
+        self.device = "cpu"
         self.embedding_dim = embedding_dim
         print(f"Loading speaker model: {model_name} on {self.device}")
         self.model = AutoModel(model=model_name, device=self.device)
@@ -71,12 +72,6 @@ class SpeakerEngine:
         return None, float(best_score)
 
 
-# Singleton instance
-_speaker_engine: Optional[SpeakerEngine] = None
-
-
+# 按需创建实例
 def get_speaker_engine() -> SpeakerEngine:
-    global _speaker_engine
-    if _speaker_engine is None:
-        _speaker_engine = SpeakerEngine()
-    return _speaker_engine
+    return SpeakerEngine()

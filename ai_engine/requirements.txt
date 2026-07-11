@@ -1,10 +1,10 @@
 # AI Framework
-torch==2.1.2
+torch
 torchaudio==2.1.2
 
 # ASR - FunASR
-funasr==1.0.27
-modelscope==1.11.0
+funasr
+modelscope
 
 # Speaker Recognition
 # CAM++ or ERes2Net from modelscope
@@ -13,7 +13,7 @@ modelscope==1.11.0
 # emotion2vec from modelscope
 
 # Vector Search
-faiss-gpu==1.7.3
+faiss-gpu
 
 # Audio Processing
 librosa==0.10.1

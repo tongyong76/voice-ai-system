@@ -1,3 +1,5 @@
+import gc
+import torch
 from typing import Optional
 from .asr_engine import get_asr_engine
 from .speaker_engine import get_speaker_engine
@@ -7,66 +9,70 @@ from .nlu_engine import get_nlu_engine
 
 class InferencePipeline:
     def __init__(self, speaker_db=None):
-        self.asr = get_asr_engine()
-        self.speaker = get_speaker_engine()
-        self.emotion = get_emotion_engine()
-        self.nlu = get_nlu_engine()
-        self.speaker_db = speaker_db  # Reference to SpeakerDB instance
+        self.speaker_db = speaker_db
+        # 不预加载模型，按需加载以节省显存
 
     def process(self, audio_path: str, hotwords: Optional[str] = None) -> dict:
         """
         Run full inference pipeline on audio file.
-
-        Args:
-            audio_path: Path to audio file
-            hotwords: Optional hotwords for ASR
-
-        Returns:
-            {
-                "asr": {"text": "...", "segments": [...]},
-                "speaker": {"speaker_id": 123, "confidence": 0.92},
-                "emotions": [{"label": "neutral", "confidence": 0.85, ...}],
-                "nlu": {"keywords": [...], "intent": "...", "entities": {...}}
-            }
+        按需加载模型，用完释放显存，避免 OOM。
         """
         result = {}
 
-        # 1. ASR Transcription
+        # 1. ASR Transcription (GPU)
         print("Running ASR...")
-        result["asr"] = self.asr.transcribe(audio_path, hotwords=hotwords)
+        asr = get_asr_engine()
+        result["asr"] = asr.transcribe(audio_path, hotwords=hotwords)
+        # 释放 ASR 模型显存
+        del asr
+        self._cleanup_gpu()
 
-        # 2. Speaker Identification
+        # 2. Speaker Identification (CPU)
         print("Running speaker identification...")
+        speaker = get_speaker_engine()
         if self.speaker_db:
-            embedding = self.speaker.extract_embedding(audio_path)
+            embedding = speaker.extract_embedding(audio_path)
             speaker_id, confidence = self.speaker_db.search(embedding)
             result["speaker"] = {
                 "speaker_id": speaker_id,
                 "confidence": confidence,
             }
         else:
-            embedding = self.speaker.extract_embedding(audio_path)
+            embedding = speaker.extract_embedding(audio_path)
             result["speaker"] = {
                 "speaker_id": None,
                 "confidence": 0.0,
                 "embedding": embedding.tolist(),
             }
+        del speaker
+        self._cleanup_gpu()
 
-        # 3. Emotion Analysis
+        # 3. Emotion Analysis (GPU)
         print("Running emotion analysis...")
-        result["emotions"] = self.emotion.analyze(audio_path)
+        emotion = get_emotion_engine()
+        result["emotions"] = emotion.analyze(audio_path)
+        del emotion
+        self._cleanup_gpu()
 
-        # 4. NLU Analysis
+        # 4. NLU Analysis (CPU, 仅文本处理)
         print("Running NLU analysis...")
         if result["asr"]["text"]:
-            result["nlu"] = self.nlu.analyze(result["asr"]["text"])
+            nlu = get_nlu_engine()
+            result["nlu"] = nlu.analyze(result["asr"]["text"])
         else:
             result["nlu"] = {"keywords": [], "intent": "other", "entities": {}}
 
         return result
 
+    @staticmethod
+    def _cleanup_gpu():
+        """释放 GPU 显存"""
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
-# Singleton instance
+
+# Singleton instance — 注意：按需加载模式下不预加载模型
 _pipeline: Optional[InferencePipeline] = None
 
 

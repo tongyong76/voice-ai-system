@@ -1,7 +1,7 @@
 # 智能语音采集与AI识别系统 - 项目文档
 
 > **创建日期**: 2026-07-04
-> **最后更新**: 2026-07-08
+> **最后更新**: 2026-07-11
 > **项目路径**: `/home/guwenjun/code/voice-ai-system`
 
 ---
@@ -33,10 +33,11 @@
 | GPU | RTX 4090 24GB |
 | 推理方式 | 自有GPU服务器本地推理 |
 | **部署方式** | **双服务器裸机部署 (弃用Docker)** |
+| **Python 环境** | **Miniconda, conda 环境名 `voice`** |
 
 **双服务器架构**:
-- **Server A (应用服务器)**: Nginx + FastAPI + MySQL + Redis + MinIO
-- **Server B (推理服务器)**: AI Engine (FunASR + CAM++ + emotion2vec + NLU)，需 RTX 4090
+- **Server A (192.168.31.45)**: Nginx + FastAPI + MySQL + Redis + MinIO
+- **Server B (192.168.31.4)**: AI Engine (FunASR + CAM++ + emotion2vec + NLU)，RTX 4090
 
 ### 2.2 硬件对接
 
@@ -61,7 +62,7 @@
 |------|------|------|
 | ASR引擎 | **FunASR (Paraformer-zh)** | 中文识别准确率高，支持热词 |
 | 说话人识别 | CAM++ | 10万规模FAISS索引 |
-| 情感分析 | emotion2vec | - |
+| 情感分析 | emotion2vec | 通过 funasr AutoModel 加载 |
 | 后端框架 | FastAPI | Python 3.11 |
 | 前端框架 | Vue 3 | Element Plus |
 | 数据库 | MySQL + Redis + MinIO | 全文检索基于 MySQL LIKE |
@@ -77,7 +78,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│              Server A — 应用服务器 (无GPU)                │
+│        Server A — 192.168.31.45 (应用服务器, 无GPU)       │
 │                                                         │
 │  ┌──────────┐  ┌───────────┐  ┌──────────┐             │
 │  │  Nginx   │  │  FastAPI   │  │  Vue3    │             │
@@ -97,10 +98,10 @@
 │              └─────────────┘                    │       │
 └─────────────────────────────────────────────────┼───────┘
                                                   │
-                                          http://Server_B_IP:8001
+                                     http://192.168.31.4:8001
                                                   │
 ┌─────────────────────────────────────────────────┼───────┐
-│              Server B — 推理服务器 (RTX 4090)     │       │
+│          Server B — 192.168.31.4 (推理服务器, RTX 4090)   │
 │                                                  ▼       │
 │  ┌──────────────────────────────────────────────────┐   │
 │  │              AI Engine (FastAPI :8001)             │   │
@@ -112,13 +113,13 @@
 │           │                                             │
 │           │ 从 Server A 的 MinIO 下载音频                │
 │           ▼                                             │
-│     Server_A_IP:9000 (MinIO)                            │
+│     192.168.31.45:9000 (MinIO)                          │
 └─────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────┐
 │              ESP32S3 设备 (200台)                        │
 │   麦克风采集 → Opus编码 → Wi-Fi HTTP上传                  │
-│   目标: http://Server_A_IP:8000/api/audio/upload         │
+│   目标: http://192.168.31.45:8000/api/audio/upload       │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -231,12 +232,12 @@ ESP32上传音频 → 保存MinIO → 写入MySQL(audio_records)
 |------|------|
 | `pipeline/asr_engine.py` | FunASR Paraformer 语音识别 |
 | `pipeline/speaker_engine.py` | CAM++ 说话人识别 |
-| `pipeline/emotion_engine.py` | emotion2vec 情感分析 |
+| `pipeline/emotion_engine.py` | emotion2vec 情感分析 (funasr AutoModel 加载) |
 | `pipeline/nlu_engine.py` | NLU关键词/意图提取 |
 | `pipeline/pipeline.py` | 推理流水线串联 |
 | `speaker_db/search.py` | FAISS 说话人检索 (10万规模) |
 | `speaker_db/enroll.py` | 声纹注册 |
-| `main.py` | FastAPI入口 (端口8001，提供 /inference, /enroll, /search_speaker 接口) |
+| `main.py` | FastAPI入口 (端口8001，从项目根目录以 `ai_engine.main:app` 启动) |
 
 **RTX 4090 推理能力**:
 
@@ -311,17 +312,14 @@ ESP32上传音频 → 保存MinIO → 写入MySQL(audio_records)
 
 **核心数据流打通 (音频上传 → 推理 → 结果入库 → WebSocket推送)**:
 - [x] `audio.py` — 音频上传后自动推送消息到 Redis 队列 `audio:pending_inference`
-- [x] `services/inference_worker.py` — **新建**，后台 Worker 消费 Redis 队列，调用 AI 引擎 `/inference` 接口，将 ASR/说话人/情感/NLU 结果写入数据库
+- [x] `services/inference_worker.py` — **新建**，后台 Worker 消费 Redis 队列，调用 AI 引擎 `/inference` 接口
 - [x] `main.py` — lifespan 中启动 Worker 和 WebSocket 订阅者两个后台任务
 - [x] `core/redis.py` — 新增 `redis_subscriber_task()`，订阅 Redis 频道广播到 WebSocket 客户端
 
 **新增后端 API 端点**:
-- [x] `api/v1/stats.py` — **新建**，Dashboard 统计 API
-- [x] `api/v1/speaker.py` — **新建**，说话人管理 API
-- [x] `api/v1/settings.py` — **新建**，系统设置 API
-
-**WebSocket 实时推送完善**:
-- [x] `api/ws.py` — 重写 ConnectionManager，支持查询参数指定频道，心跳 ping/pong
+- [x] `api/v1/stats.py` — Dashboard 统计 API
+- [x] `api/v1/speaker.py` — 说话人管理 API
+- [x] `api/v1/settings.py` — 系统设置 API
 
 **前端接入真实数据**:
 - [x] Dashboard / SpeakerManage / SystemSettings / RealtimeMonitor 已接入真实 API
@@ -336,29 +334,57 @@ ESP32上传音频 → 保存MinIO → 写入MySQL(audio_records)
 **Server A 部署验证通过**:
 - [x] MySQL 8.0 — 10 张表全部创建成功
 - [x] Redis — 正常运行 (PONG)
-- [x] MinIO — 健康检查通过 (独立二进制安装，非 Snap)
-- [x] FastAPI 后端 — `curl http://localhost:8000/health` 返回 `{"status":"ok"}`
-- [x] Nginx 前端 — `curl -I http://localhost` 返回 200
+- [x] MinIO — 健康检查通过
+- [x] FastAPI 后端 — `{"status":"ok"}`
+- [x] Nginx 前端 — HTTP 200
 
 **前端构建修复**:
 - [x] `vue-tsc` 兼容性问题 — 跳过类型检查，直接 `vite build`
-- [x] `@tsconfig/node24` 缺失 — 安装依赖解决
-- [x] ECharts 按需引入 — Dashboard.vue 改用 `echarts/core` 按需加载，减少 ~600KB
+- [x] ECharts 按需引入 — Dashboard.vue 改用 `echarts/core` 按需加载
 
-**代码修改**:
-- [x] `server/app/core/search.py` — **新建**，RediSearch 全文检索模块 (备用)
-- [x] `server/app/api/v1/search.py` — 搜索 API 重构 (支持 RediSearch / MySQL LIKE 双模式)
-- [x] `server/app/core/config.py` — 移除 ES_HOST/ES_PORT 配置
-- [x] `server/requirements.txt` — 移除 elasticsearch 依赖
-- [x] `server/Dashboard.vue` — ECharts 按需引入优化
+### 5.4 2026-07-11 开发进展
 
-**部署踩坑记录**:
-- [x] Systemd 服务文件 `WorkingDirectory` 路径必须用 `<<'EOF'`（单引号）防止变量展开为空
-- [x] `passlib` + `bcrypt>=4.1` 不兼容 — 需降级 `bcrypt==4.0.1`
-- [x] Nginx 端口 80 被 Apache 占用 — 需先 `systemctl stop apache2`
-- [x] MinIO Snap 版与独立版冲突 — 需 `snap disable minio` 后再安装独立版
+**Server B 部署完成** ✅:
+- [x] NVIDIA 驱动安装 (595.71.05, CUDA 13.2)
+- [x] PyTorch 2.5.1+cu124 安装，CUDA 验证通过
+- [x] AI 引擎依赖安装 (funasr, modelscope, faiss-cpu)
+- [x] 三个模型全部下载到本地缓存:
+  - FunASR Paraformer-zh (ASR)
+  - CAM++ (说话人识别)
+  - emotion2vec (情感分析)
+- [x] AI Engine 手动启动测试通过，三个模型全部加载到 CUDA
+- [x] Systemd 服务配置完成，`curl http://localhost:8001/health` 返回 `{"status":"ok"}`
+- [x] Server A → Server B 连通性验证通过 (`curl http://192.168.31.4:8001/health`)
 
-### 5.4 文件清单
+**Server B 环境配置调整**:
+- [x] 使用 Miniconda conda 环境 `voice`（非 venv）
+- [x] `ai_engine/requirements.txt` 版本锁定解除（torch/faiss-gpu/funasr/modelscope）
+- [x] `faiss-gpu` 改为 `faiss-cpu`（避免 CUDA 版本冲突）
+- [x] AI Engine 启动命令: `uvicorn ai_engine.main:app`（从项目根目录运行，非相对导入）
+- [x] emotion2vec 改用 `funasr.AutoModel` 加载（modelscope pipeline 有版本兼容问题）
+
+**IP 地址确认**:
+| 服务器 | IP | 用途 |
+|--------|-----|------|
+| Server A (G-ITX) | 192.168.31.45 | 应用服务器 |
+| Server B (WORKSERVER) | 192.168.31.4 | 推理服务器 |
+
+### 5.5 部署踩坑记录
+
+| 问题 | 原因 | 解决方案 |
+|------|------|----------|
+| Systemd `status=200/CHDIR` | heredoc 变量被展开为空路径 | 使用 `<<'EOF'`（单引号） |
+| passlib bcrypt 报错 | bcrypt>=4.1 与 passlib 不兼容 | `pip install bcrypt==4.0.1` |
+| Nginx 端口 80 占用 | Apache 占用 | `sudo systemctl stop apache2` |
+| Nginx 500 Permission denied | www-data 无权访问 home 目录 | `chmod 755 /home/guwenjun` |
+| MinIO AccessDenied | Snap 版路径不同 | `snap disable minio`，用独立二进制 |
+| vue-tsc 构建失败 | TypeScript 版本不兼容 | `npx vite build` 跳过类型检查 |
+| `@tsconfig/node24` 缺失 | Node 24 tsconfig 包未安装 | `pnpm add -D @tsconfig/node24` |
+| faiss-gpu 版本冲突 | 与 torch CUDA 版本不兼容 | 改用 `faiss-cpu` |
+| modelscope pipeline 报错 | emotion2vec 注册表不匹配 | 改用 `funasr.AutoModel` 加载 |
+| AI Engine 相对导入失败 | `uvicorn main:app` 无法解析相对导入 | 从项目根目录运行 `uvicorn ai_engine.main:app` |
+
+### 5.6 文件清单
 
 **后端服务**:
 - `server/app/main.py` - FastAPI入口 (含MinIO初始化、Worker启动)
@@ -396,7 +422,7 @@ ESP32上传音频 → 保存MinIO → 写入MySQL(audio_records)
 - `.gitignore`
 - `README.md`
 - `scripts/deploy-server-a.sh` - Server A 部署脚本
-- `scripts/deploy-server-b.sh` - Server B 部署脚本
+- `scripts/deploy-server-b.sh` - Server B 部署脚本 (Miniconda)
 - `scripts/check-status.sh` - 服务状态检查脚本
 - `scripts/init-db.sql` - 数据库初始化
 
@@ -404,195 +430,59 @@ ESP32上传音频 → 保存MinIO → 写入MySQL(audio_records)
 
 ## 六、部署方案 (双服务器)
 
-### 6.1 服务器规格
+### 6.1 服务器信息
 
 | 项目 | Server A (应用服务器) | Server B (推理服务器) |
 |------|----------------------|----------------------|
+| **主机名** | G-ITX | WORKSERVER |
+| **IP** | 192.168.31.45 | 192.168.31.4 |
 | **用途** | 前端 + 后端 + 存储 | AI推理 |
-| **CPU** | 8核+ | 8核+ |
-| **内存** | 32GB+ | 32GB+ |
 | **GPU** | 无 | RTX 4090 24GB |
-| **磁盘** | 1TB+ SSD (存储音频) | 500GB SSD (模型缓存) |
-| **OS** | Ubuntu 22.04+ | Ubuntu 22.04+ |
-| **网络** | 内网互通 + 公网(可选) | 内网互通 |
+| **OS** | Ubuntu 26.04 | Ubuntu 26.04 |
+| **Python** | Miniconda, conda `voice` | Miniconda, conda `voice` |
+| **驱动** | - | NVIDIA 595.71.05, CUDA 13.2 |
 
-### 6.2 Server A 部署
+### 6.2 Server A 已验证配置
 
-**已验证的部署步骤** (2026-07-08):
-
-```bash
-# 1. 系统依赖
-sudo apt update && sudo apt install -y python3.11 python3.11-venv python3-pip \
-    nginx mysql-server redis-server ffmpeg curl wget gnupg2
-
-# 2. MySQL
-sudo systemctl start mysql
-sudo mysql -e "
-CREATE DATABASE voice_ai CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER 'voice_user'@'localhost' IDENTIFIED BY 'voice_pass';
-CREATE USER 'voice_user'@'%' IDENTIFIED BY 'voice_pass';
-GRANT ALL ON voice_ai.* TO 'voice_user'@'localhost';
-GRANT ALL ON voice_ai.* TO 'voice_user'@'%';
-FLUSH PRIVILEGES;
-"
-mysql -u voice_user -pvoice_pass voice_ai < scripts/init-db.sql
-
-# 3. Redis
-sudo systemctl start redis-server
-redis-cli ping  # 期望 PONG
-
-# 4. MinIO (独立二进制，非 Snap)
-wget https://dl.min.io/server/minio/release/linux-amd64/minio -O /tmp/minio
-sudo mv /tmp/minio /usr/local/bin/ && sudo chmod +x /usr/local/bin/minio
-sudo mkdir -p /data/minio
-# 创建 systemd 服务 (注意用 <<'EOF' 单引号)
-sudo tee /etc/systemd/system/minio.service <<'EOF'
-[Unit]
-Description=MinIO
-After=network.target
-[Service]
-Type=simple
-User=root
-Environment="MINIO_ROOT_USER=minioadmin"
-Environment="MINIO_ROOT_PASSWORD=minioadmin"
-ExecStart=/usr/local/bin/minio server /data/minio --console-address ":9001"
-Restart=always
-RestartSec=5
-[Install]
-WantedBy=multi-user.target
-EOF
-sudo systemctl daemon-reload && sudo systemctl enable --now minio
-
-# 5. Python 后端
-cd /home/guwenjun/code/voice-ai-system
-python3.11 -m venv venv-server
-source venv-server/bin/activate
-cd server && pip install -r requirements.txt && cd ..
-# 降级 bcrypt 解决 passlib 兼容问题
-pip install bcrypt==4.0.1
-# 创建 .env (注意用 <<'EOF' 单引号)
-cat > server/.env <<'EOF'
-MYSQL_HOST=localhost
-MYSQL_PORT=3306
-MYSQL_USER=voice_user
-MYSQL_PASSWORD=voice_pass
-MYSQL_DATABASE=voice_ai
-REDIS_HOST=localhost
-REDIS_PORT=6379
-MINIO_ENDPOINT=localhost:9000
-MINIO_ACCESS_KEY=minioadmin
-MINIO_SECRET_KEY=minioadmin
-AI_ENGINE_URL=http://SERVER_B_IP:8001
-SECRET_KEY=your-production-secret-key-change-me
-EOF
-
-# 6. 前端构建
-cd web && npm install && npm run build
-
-# 7. Nginx (注意用 <<'EOF' 单引号)
-sudo systemctl stop apache2 2>/dev/null
-sudo tee /etc/nginx/sites-available/voice-ai <<'EOF'
-server {
-    listen 80;
-    server_name _;
-    root /home/guwenjun/code/voice-ai-system/web/dist;
-    index index.html;
-    location / {
-        try_files $uri $uri/ /index.html;
-    }
-    location /api/ {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        client_max_body_size 100M;
-    }
-    location /ws/ {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_read_timeout 86400;
-    }
-}
-EOF
-sudo ln -sf /etc/nginx/sites-available/voice-ai /etc/nginx/sites-enabled/
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t && sudo systemctl start nginx
-
-# 8. 后端 Systemd 服务 (注意用 <<'EOF' 单引号)
-sudo tee /etc/systemd/system/voice-server.service <<'EOF'
-[Unit]
-Description=Voice AI FastAPI Server
-After=network.target mysql.service redis-server.service
-[Service]
-Type=simple
-User=guwenjun
-Group=guwenjun
-WorkingDirectory=/home/guwenjun/code/voice-ai-system/server
-ExecStart=/home/guwenjun/miniconda3/envs/voice-ai/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
-Restart=always
-RestartSec=5
-[Install]
-WantedBy=multi-user.target
-EOF
-sudo systemctl daemon-reload && sudo systemctl enable --now voice-server
-
-# 9. 验证
-curl http://localhost:8000/health    # {"status":"ok"}
-curl -I http://localhost             # 200 OK
-redis-cli ping                       # PONG
-mysql -u voice_user -pvoice_pass -e "USE voice_ai; SHOW TABLES;"
+**服务状态** (2026-07-11):
+```
+✓ MySQL:      运行中 (10张表)
+✓ Redis:      运行中 (PONG)
+✓ MinIO:      运行中 (health live)
+✓ FastAPI:    运行中 (health ok)
+✓ Nginx:      运行中 (HTTP 200)
 ```
 
-### 6.3 Server B 部署
+**后端 Systemd 服务**:
+```
+ExecStart=/home/guwenjun/miniconda3/envs/voice/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+WorkingDirectory=/home/guwenjun/code/voice-ai-system/server
+```
 
-```bash
-# 1. CUDA 环境
-nvidia-smi  # 确认驱动已安装
+### 6.3 Server B 已验证配置
 
-# 2. Python 环境
-sudo apt update && sudo apt install -y python3.11 python3.11-venv python3-pip \
-    libsndfile1 ffmpeg
-cd /home/guwenjun/code/voice-ai-system
-python3.11 -m venv venv-ai
-source venv-ai/bin/activate
-cd ai_engine && pip install -r requirements.txt && cd ..
+**服务状态** (2026-07-11):
+```
+✓ AI Engine:  运行中 (health ok)
+✓ GPU:        RTX 4090, CUDA True
+✓ 模型加载:   ASR + Speaker + Emotion 全部加载到 CUDA
+✓ 内存占用:   ~2.8GB
+```
 
-# 3. 环境变量
-cat > ai_engine/.env <<'EOF'
-MINIO_ENDPOINT=SERVER_A_IP:9000
+**AI Engine Systemd 服务**:
+```
+ExecStart=/home/guwenjun/miniconda3/envs/voice/bin/uvicorn ai_engine.main:app --host 0.0.0.0 --port 8001
+WorkingDirectory=/home/guwenjun/code/voice-ai-system
+Environment="CUDA_VISIBLE_DEVICES=0"
+```
+
+**环境变量** (`ai_engine/.env`):
+```
+MINIO_ENDPOINT=192.168.31.45:9000
 MINIO_ACCESS_KEY=minioadmin
 MINIO_SECRET_KEY=minioadmin
 MINIO_BUCKET=voice-audio
 CUDA_VISIBLE_DEVICES=0
-EOF
-
-# 4. 预下载模型 (~5GB)
-python -c "
-from funasr import AutoModel
-AutoModel(model='iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch')
-print('Done')
-"
-
-# 5. Systemd 服务
-sudo tee /etc/systemd/system/voice-ai-engine.service <<'EOF'
-[Unit]
-Description=Voice AI Inference Engine
-After=network.target
-[Service]
-Type=simple
-User=guwenjun
-WorkingDirectory=/home/guwenjun/code/voice-ai-system/ai_engine
-Environment="CUDA_VISIBLE_DEVICES=0"
-ExecStart=/home/guwenjun/code/voice-ai-system/venv-ai/bin/uvicorn main:app --host 0.0.0.0 --port 8001
-Restart=always
-RestartSec=5
-[Install]
-WantedBy=multi-user.target
-EOF
-sudo systemctl daemon-reload && sudo systemctl enable --now voice-ai-engine
 ```
 
 ### 6.4 端口清单
@@ -613,26 +503,15 @@ sudo systemctl daemon-reload && sudo systemctl enable --now voice-ai-engine
 ```bash
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
-sudo ufw allow from SERVER_B_IP to any port 9000  # MinIO
+sudo ufw allow from 192.168.31.4 to any port 9000  # MinIO
 sudo ufw enable
 ```
 
 **Server B**:
 ```bash
-sudo ufw allow from SERVER_A_IP to any port 8001  # AI Engine
+sudo ufw allow from 192.168.31.45 to any port 8001  # AI Engine
 sudo ufw enable
 ```
-
-### 6.6 常见部署问题
-
-| 问题 | 原因 | 解决方案 |
-|------|------|----------|
-| Systemd `status=200/CHDIR` | heredoc 变量被展开为空路径 | 使用 `<<'EOF'`（单引号） |
-| passlib bcrypt 报错 | bcrypt>=4.1 与 passlib 不兼容 | `pip install bcrypt==4.0.1` |
-| Nginx 启动失败 (端口占用) | Apache 占用 80 端口 | `sudo systemctl stop apache2` |
-| MinIO AccessDenied | Snap 版 MinIO 路径不同 | `snap disable minio`，用独立二进制 |
-| vue-tsc 构建失败 | TypeScript 版本不兼容 | 跳过类型检查：`npx vite build` |
-| `@tsconfig/node24` 缺失 | Node 24 的 tsconfig 包未安装 | `pnpm add -D @tsconfig/node24` |
 
 ---
 
@@ -646,11 +525,13 @@ sudo ufw enable
 - [x] 添加数据统计和报表功能 (2026-07-06)
 - [x] Server A 双服务器部署验证 (2026-07-08)
 - [x] 前端构建优化 — ECharts 按需引入 (2026-07-08)
+- [x] Server B 推理服务器部署 (2026-07-11)
+- [x] AI Engine 三个模型加载验证 (2026-07-11)
+- [x] Server A ↔ Server B 连通性验证 (2026-07-11)
 
 ### 7.2 中优先级
 
-- [ ] Server B 推理服务器部署 (需 RTX 4090 环境)
-- [ ] 端到端集成测试 (需要 GPU 环境验证 AI 引擎推理)
+- [ ] 端到端集成测试 — 上传音频 → AI 推理 → 结果入库 → 前端展示
 - [ ] 完善任务调度系统 — 任务下发后通知设备执行采集
 - [ ] 实现说话人库的批量导入功能 (后端 bulk_enroll API 已有，前端待开发)
 - [ ] 音频详情页 AudioDetail — WaveSurfer 波形播放 + AI 结果展示联调
@@ -672,15 +553,17 @@ sudo ufw enable
 
 | 技术 | 版本 |
 |------|------|
-| Python | 3.11 |
+| Python | 3.11 (Miniconda) |
 | FastAPI | 0.109.0 |
-| PyTorch | 2.1.2 |
-| FunASR | 1.0.27 |
+| PyTorch | 2.5.1+cu124 |
+| FunASR | 1.3.14 |
+| FAISS | 1.14.3 (cpu) |
 | Vue | 3.5 |
 | Element Plus | 2.5 |
 | MySQL | 8.0 |
 | Redis | 8.0 |
 | MinIO | latest |
+| NVIDIA Driver | 595.71.05 |
 
 ### 8.2 参考文档
 

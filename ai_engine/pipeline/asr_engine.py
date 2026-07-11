@@ -5,7 +5,8 @@ from typing import Optional
 
 class ASREngine:
     def __init__(self, model_name: str = "iic/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-pytorch"):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        # ASR 模型用 CPU（GPU 显存不足以同时加载模型和推理）
+        self.device = "cpu"
         print(f"Loading ASR model: {model_name} on {self.device}")
         self.model = AutoModel(
             model=model_name,
@@ -66,12 +67,6 @@ class ASREngine:
         }
 
 
-# Singleton instance
-_asr_engine: Optional[ASREngine] = None
-
-
+# 按需创建实例（不用单例，便于释放显存）
 def get_asr_engine() -> ASREngine:
-    global _asr_engine
-    if _asr_engine is None:
-        _asr_engine = ASREngine()
-    return _asr_engine
+    return ASREngine()

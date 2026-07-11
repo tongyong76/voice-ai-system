@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from typing import Optional, List
+from typing import List
 from funasr import AutoModel
 
 
@@ -9,7 +9,8 @@ class EmotionEngine:
         self,
         model_name: str = "iic/emotion2vec_base_finetuned",
     ):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        # 情感模型用 CPU
+        self.device = "cpu"
         self.emotion_labels = [
             "happy", "sad", "angry", "fear", "surprise", "disgust", "neutral"
         ]
@@ -62,12 +63,6 @@ class EmotionEngine:
         return emotions
 
 
-# Singleton instance
-_emotion_engine: Optional[EmotionEngine] = None
-
-
+# 按需创建实例
 def get_emotion_engine() -> EmotionEngine:
-    global _emotion_engine
-    if _emotion_engine is None:
-        _emotion_engine = EmotionEngine()
-    return _emotion_engine
+    return EmotionEngine()
