@@ -57,3 +57,4 @@ speaker_db/index/*.pkl
 *.opus
 *.mp3
 uploads/
+ai_engine/models/

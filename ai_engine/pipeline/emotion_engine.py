@@ -1,22 +1,25 @@
 import torch
 import numpy as np
-from typing import List
+from typing import List, Optional
 from funasr import AutoModel
+
+# ModelScope 模型 ID（首次使用自动下载到 ~/.cache/modelscope/，之后走本地缓存）
+DEFAULT_EMOTION_MODEL = "iic/emotion2vec_base_finetuned"
 
 
 class EmotionEngine:
     def __init__(
         self,
-        model_name: str = "iic/emotion2vec_base_finetuned",
+        model_name: str = DEFAULT_EMOTION_MODEL,
+        device: str = "cpu",
     ):
-        # 情感模型用 CPU
-        self.device = "cpu"
+        self.device = device
         self.emotion_labels = [
             "happy", "sad", "angry", "fear", "surprise", "disgust", "neutral"
         ]
-        print(f"Loading emotion model: {model_name} on {self.device}")
+        print(f"[Emotion] Loading model: {model_name} on {self.device}")
         self.model = AutoModel(model=model_name, device=self.device)
-        print("Emotion model loaded successfully")
+        print(f"[Emotion] Model loaded successfully on {self.device}")
 
     def analyze(self, audio_path: str) -> List[dict]:
         """
@@ -63,6 +66,20 @@ class EmotionEngine:
         return emotions
 
 
-# 按需创建实例
+# ---- 单例：启动时加载一次，常驻显存 ----
+_emotion_engine: Optional[EmotionEngine] = None
+
+
 def get_emotion_engine() -> EmotionEngine:
-    return EmotionEngine()
+    """获取情感引擎单例（首次调用时加载模型到 GPU，之后复用）"""
+    global _emotion_engine
+    if _emotion_engine is None:
+        _emotion_engine = EmotionEngine()
+    return _emotion_engine
+
+
+def preload_emotion():
+    """启动时预热情感模型"""
+    print("[Emotion] Preloading model...")
+    get_emotion_engine()
+    print("[Emotion] Preload complete")

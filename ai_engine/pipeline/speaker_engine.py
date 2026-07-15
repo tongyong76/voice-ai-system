@@ -3,19 +3,22 @@ import numpy as np
 from typing import Optional, List, Tuple
 from funasr import AutoModel
 
+# ModelScope 模型 ID（首次使用自动下载到 ~/.cache/modelscope/，之后走本地缓存）
+DEFAULT_SPEAKER_MODEL = "iic/speech_campplus_sv_zh-cn_16k-common"
+
 
 class SpeakerEngine:
     def __init__(
         self,
-        model_name: str = "iic/speech_campplus_sv_zh-cn_16k-common",
+        model_name: str = DEFAULT_SPEAKER_MODEL,
         embedding_dim: int = 512,
+        device: str = "cuda",  # GPU 常驻
     ):
-        # 说话人模型用 CPU 即可（体积小，GPU 留给 ASR）
-        self.device = "cpu"
+        self.device = device
         self.embedding_dim = embedding_dim
-        print(f"Loading speaker model: {model_name} on {self.device}")
+        print(f"[Speaker] Loading model: {model_name} on {self.device}")
         self.model = AutoModel(model=model_name, device=self.device)
-        print("Speaker model loaded successfully")
+        print(f"[Speaker] Model loaded successfully on {self.device}")
 
     def extract_embedding(self, audio_path: str) -> np.ndarray:
         """
@@ -72,6 +75,20 @@ class SpeakerEngine:
         return None, float(best_score)
 
 
-# 按需创建实例
+# ---- 单例：启动时加载一次，常驻显存 ----
+_speaker_engine: Optional[SpeakerEngine] = None
+
+
 def get_speaker_engine() -> SpeakerEngine:
-    return SpeakerEngine()
+    """获取说话人引擎单例（首次调用时加载模型到 GPU，之后复用）"""
+    global _speaker_engine
+    if _speaker_engine is None:
+        _speaker_engine = SpeakerEngine()
+    return _speaker_engine
+
+
+def preload_speaker():
+    """启动时预热说话人模型"""
+    print("[Speaker] Preloading model...")
+    get_speaker_engine()
+    print("[Speaker] Preload complete")
