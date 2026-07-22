@@ -1,6 +1,6 @@
 # 智能语音采集与AI识别系统
 
-基于 ESP32 + FunASR + 说话人识别 + 情感分析的智能语音采集与分析系统。
+基于 ESP32 + FunASR + 说话人识别 + 情感分析 + RAG 知识库问答的智能语音采集与分析系统。
 
 ## 系统架构
 
@@ -8,21 +8,21 @@
 ┌─────────────────────────────────────────────────────────┐
 │        Server A — 192.168.31.45 (应用服务器, 无GPU)       │
 │                                                         │
-│  ┌──────────┐  ┌───────────┐  ┌──────────┐             │
-│  │  Nginx   │  │  FastAPI   │  │  Vue3    │             │
-│  │  :80     │  │  :8000     │  │  构建产物 │             │
-│  └──────────┘  └───────────┘  └──────────┘             │
-│       │              │                                   │
-│       ▼              ▼                                   │
-│  ┌──────────┐  ┌───────────┐  ┌──────────┐             │
-│  │  MySQL   │  │   Redis   │  │  MinIO   │             │
-│  │  :3306   │  │   :6379   │  │ :9000    │             │
-│  └──────────┘  └───────────┘  └──────────┘             │
+│  ┌──────────┐  ┌───────────┐  ┌──────────┐              │
+│  │  Nginx   │  │  FastAPI  │  │  Vue3    │              │
+│  │  :80     │  │  :8000    │  │  构建产物 │              │
+│  └──────────┘  └───────────┘  └──────────┘              │
+│       │              │                                  │
+│       ▼              ▼                                  │
+│  ┌──────────┐  ┌───────────┐  ┌──────────┐              │
+│  │  MySQL   │  │   Redis   │  │  MinIO   │              │
+│  │  :3306   │  │   :6379   │  │ :9000    │              │
+│  └──────────┘  └───────────┘  └──────────┘              │
 │                     │                                   │
 │                     │ Redis队列                          │
 │                     ▼                                   │
 │              ┌─────────────┐                            │
-│              │  Worker 消费  │──── HTTP 调用 ────┐       │
+│              │  Worker 消费 │ ──── HTTP 调用 ────┐       │
 │              └─────────────┘                    │       │
 └─────────────────────────────────────────────────┼───────┘
                                                   │
@@ -30,18 +30,26 @@
                                                   │
 ┌─────────────────────────────────────────────────┼───────┐
 │          Server B — 192.168.31.4 (推理服务器, RTX 4090)   │
-│                                                  ▼       │
+│                                                  ▼      │
 │  ┌──────────────────────────────────────────────────┐   │
-│  │              AI Engine (FastAPI :8001)             │   │
-│  │  ┌──────────┐ ┌──────────┐ ┌────────┐ ┌────────┐│   │
-│  │  │FunASR    │ │ CAM++    │ │emotion │ │  NLU   ││   │
-│  │  │Paraformer│ │ 说话人    │ │2vec    │ │ 关键词  ││   │
-│  │  └──────────┘ └──────────┘ └────────┘ └────────┘│   │
+│  │              AI Engine (FastAPI :8001)           │   │
+│  │  ┌──────────┐ ┌────────────────────────────────┐ │   │
+│  │  │text2vec  │ │ RAG Pipeline (检索+生成)        │ │   │
+│  │  │文本向量化 │ │ FAISS文本索引 + llama.cpp LLM   │ │   │
+│  │  └──────────┘ └────────────────────────────────┘ │   │
+│  │  ┌──────────┐ ┌──────────┐ ┌────────┐ ┌────────┐ │   │
+│  │  │FunASR    │ │ CAM++    │ │emotion │ │  NLU   │ │   │
+│  │  │Paraformer│ │ 说话人    │ │2vec    │ │ 关键词  │ │   │
+│  │  └──────────┘ └──────────┘ └────────┘ └────────┘ │   │
 │  └──────────────────────────────────────────────────┘   │
-│           │                                             │
-│           │ 从 Server A 的 MinIO 下载音频                │
-│           ▼                                             │
-│     192.168.31.45:9000 (MinIO)                          │
+│           │                          ▲                   │
+│           │ 从 Server A 的 MinIO     │ OpenAI 兼容 API   │
+│           │ 下载音频                 │                   │
+│           ▼                          │                   │
+│     192.168.31.45:9000 (MinIO)  ┌────┴─────────────┐    │
+│                                 │ llama.cpp :8080  │    │
+│                                 │ Qwen2.5-7B Q4KM  │    │
+│                                 └──────────────────┘    │
 └─────────────────────────────────────────────────────────┘
                                                   ▲
 ┌─────────────────────────────────────────────────┼───────┐
@@ -53,23 +61,24 @@
 
 ## 技术栈
 
-| 层级     | 技术                                          |
-| -------- | --------------------------------------------- |
-| 边缘端   | ESP-IDF (C), Opus 编码, HTTP 上传             |
-| 后端服务 | Python 3.11, FastAPI, SQLAlchemy, Redis       |
+| 层级     | 技术                                                    |
+| -------- | ------------------------------------------------------- |
+| 边缘端   | ESP-IDF (C), Opus 编码, HTTP 上传                       |
+| 后端服务 | Python 3.11, FastAPI, SQLAlchemy, Redis                 |
 | AI 推理  | PyTorch 2.5.1, FunASR 1.3.14, CAM++, emotion2vec, FAISS |
-| 数据库   | MySQL 8.0, Redis 8.0, MinIO                   |
-| 前端     | Vue 3, TypeScript, Element Plus, ECharts      |
-| 部署     | 双服务器裸机部署, Nginx, Systemd, Miniconda   |
+| RAG 问答 | text2vec-base-chinese, FAISS (文本向量), llama.cpp + Qwen2.5-7B |
+| 数据库   | MySQL 8.0, Redis 8.0, MinIO                             |
+| 前端     | Vue 3, TypeScript, Element Plus, ECharts                |
+| 部署     | 双服务器裸机部署, Nginx, Systemd, Miniconda             |
 
 ## 快速开始
 
 ### 1. 服务器规划
 
-| 服务器         | IP            | 用途                            | 最低配置                         |
-| -------------- | ------------- | ------------------------------- | -------------------------------- |
-| **Server A**   | 192.168.31.45 | 应用服务器 (前端 + 后端 + 存储) | 8核 CPU, 32GB RAM, 1TB SSD       |
-| **Server B**   | 192.168.31.4  | 推理服务器 (AI引擎)             | 8核 CPU, 32GB RAM, RTX 4090 24GB |
+| 服务器       | IP            | 用途                            | 最低配置                         |
+| ------------ | ------------- | ------------------------------- | -------------------------------- |
+| **Server A** | 192.168.31.45 | 应用服务器 (前端 + 后端 + 存储) | 8核 CPU, 32GB RAM, 1TB SSD       |
+| **Server B** | 192.168.31.4  | 推理服务器 (AI引擎)             | 8核 CPU, 32GB RAM, RTX 4090 24GB |
 
 两台服务器需内网互通。Python 环境统一使用 Miniconda，conda 环境名 `voice`。
 
@@ -131,12 +140,12 @@ chmod +x scripts/deploy-server-b.sh
 
 ### 5. 访问系统
 
-| 服务         | 地址                                |
-| ------------ | ----------------------------------- |
-| 前端         | `http://192.168.31.45`              |
-| API 文档     | `http://192.168.31.45:8000/docs`    |
-| MinIO 控制台 | `http://192.168.31.45:9001`         |
-| AI 引擎文档  | `http://192.168.31.4:8001/docs`     |
+| 服务         | 地址                             |
+| ------------ | -------------------------------- |
+| 前端         | `http://192.168.31.45`           |
+| API 文档     | `http://192.168.31.45:8000/docs` |
+| MinIO 控制台 | `http://192.168.31.45:9001`      |
+| AI 引擎文档  | `http://192.168.31.4:8001/docs`  |
 
 ### 6. 默认账号
 
@@ -223,13 +232,18 @@ voice-ai-system/
 │   │   ├── asr_engine.py      # FunASR 语音识别
 │   │   ├── speaker_engine.py  # CAM++ 说话人识别
 │   │   ├── emotion_engine.py  # emotion2vec 情感分析
-│   │   └── nlu_engine.py      # NLU 关键词/意图
+│   │   ├── nlu_engine.py      # NLU 关键词/意图
+│   │   └── text_embedder.py   # text2vec 文本向量化
 │   ├── speaker_db/            # FAISS 说话人检索
+│   ├── rag/                   # RAG 知识库问答
+│   │   ├── vector_store.py    # FAISS 文本向量存储
+│   │   ├── retriever.py       # 向量检索器
+│   │   └── generator.py       # llama.cpp LLM 客户端
 │   └── requirements.txt
 ├── web/                        # Vue3 前端
 │   ├── src/
-│   │   ├── views/             # 页面 (10个)
-│   │   ├── api/               # API 调用
+│   │   ├── views/             # 页面 (11个)
+│   │   ├── api/               # API 调用 (8个)
 │   │   └── components/        # 公共组件
 │   └── package.json
 ├── esp32-firmware/             # ESP32 固件
@@ -250,6 +264,7 @@ voice-ai-system/
 | ASR      | FunASR Paraformer-zh, 实时率 1:50 |
 | 说话人库 | 10万规模, FAISS 检索 <1ms         |
 | 情感分析 | emotion2vec                       |
+| RAG 问答 | text2vec + FAISS + Qwen2.5-7B, 本地离线推理 |
 | 并发设备 | 200 台                            |
 | 日均音频 | 1,600 小时 (~25GB)                |
 
@@ -264,20 +279,21 @@ voice-ai-system/
 | MinIO         | 9000 | Server A | 对象存储 (内网)             |
 | MinIO Console | 9001 | Server A | 管理控制台                  |
 | AI Engine     | 8001 | Server B | 推理服务 (仅 Server A 调用) |
+| llama.cpp     | 8080 | Server B | LLM 服务 (仅 AI Engine 调用) |
 
 ## 常见问题
 
-| 问题 | 原因 | 解决 |
-|------|------|------|
-| Systemd `status=200/CHDIR` | heredoc 变量展开为空 | 使用 `<<'EOF'` 单引号 |
-| passlib bcrypt 报错 | bcrypt>=4.1 不兼容 | `pip install bcrypt==4.0.1` |
-| Nginx 端口 80 占用 | Apache 占用 | `sudo systemctl stop apache2` |
-| Nginx 500 Permission denied | www-data 无权访问 home | `chmod 755 /home/用户名` |
-| MinIO AccessDenied | Snap 版冲突 | `snap disable minio`，用独立二进制 |
-| vue-tsc 构建失败 | TS 版本不兼容 | 用 `npx vite build` 跳过类型检查 |
-| faiss-gpu 版本冲突 | torch CUDA 版本不兼容 | 改用 `faiss-cpu` |
-| AI Engine 相对导入失败 | 目录不对 | 从项目根目录运行 `uvicorn ai_engine.main:app` |
-| emotion2vec 加载失败 | modelscope 版本问题 | 用 `funasr.AutoModel` 加载 |
+| 问题                        | 原因                   | 解决                                          |
+| --------------------------- | ---------------------- | --------------------------------------------- |
+| Systemd `status=200/CHDIR`  | heredoc 变量展开为空   | 使用 `<<'EOF'` 单引号                         |
+| passlib bcrypt 报错         | bcrypt>=4.1 不兼容     | `pip install bcrypt==4.0.1`                   |
+| Nginx 端口 80 占用          | Apache 占用            | `sudo systemctl stop apache2`                 |
+| Nginx 500 Permission denied | www-data 无权访问 home | `chmod 755 /home/用户名`                      |
+| MinIO AccessDenied          | Snap 版冲突            | `snap disable minio`，用独立二进制            |
+| vue-tsc 构建失败            | TS 版本不兼容          | 用 `npx vite build` 跳过类型检查              |
+| faiss-gpu 版本冲突          | torch CUDA 版本不兼容  | 改用 `faiss-cpu`                              |
+| AI Engine 相对导入失败      | 目录不对               | 从项目根目录运行 `uvicorn ai_engine.main:app` |
+| emotion2vec 加载失败        | modelscope 版本问题    | 用 `funasr.AutoModel` 加载                    |
 
 ## License
 

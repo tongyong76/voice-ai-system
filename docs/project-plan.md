@@ -1,7 +1,7 @@
 # 智能语音采集与AI识别系统 - 项目文档
 
 > **创建日期**: 2026-07-04
-> **最后更新**: 2026-07-11
+> **最后更新**: 2026-07-22
 > **项目路径**: `/home/guwenjun/code/voice-ai-system`
 
 ---
@@ -21,6 +21,7 @@
 - NLU提取：关键词、意图、实体抽取
 - 全文检索：基于转写文本的搜索
 - 实时监控：WebSocket推送实时转写结果
+- **RAG 知识库问答**：基于向量检索 + 本地 LLM 的语音内容智能问答
 
 ---
 
@@ -63,6 +64,9 @@
 | ASR引擎 | **FunASR (Paraformer-zh)** | 中文识别准确率高，支持热词 |
 | 说话人识别 | CAM++ | 10万规模FAISS索引 |
 | 情感分析 | emotion2vec | 通过 funasr AutoModel 加载 |
+| **文本向量化** | **text2vec-base-chinese** | 768维中文语义向量，sentence-transformers 加载 |
+| **向量检索** | **FAISS (文本索引)** | 复用已有依赖，独立于说话人索引 |
+| **LLM 问答** | **llama.cpp + Qwen2.5-7B-Instruct** | Q4_K_M 量化 (~5GB)，本地离线推理 |
 | 后端框架 | FastAPI | Python 3.11 |
 | 前端框架 | Vue 3 | Element Plus |
 | 数据库 | MySQL + Redis + MinIO | 全文检索基于 MySQL LIKE |
@@ -109,11 +113,19 @@
 │  │  │FunASR    │ │ CAM++    │ │emotion │ │  NLU   ││   │
 │  │  │Paraformer│ │ 说话人    │ │2vec    │ │ 关键词  ││   │
 │  │  └──────────┘ └──────────┘ └────────┘ └────────┘│   │
+│  │  ┌──────────┐ ┌──────────────────────────────────┐│   │
+│  │  │text2vec  │ │ RAG Pipeline (检索+生成)          ││   │
+│  │  │文本向量化 │ │ FAISS文本索引 + llama.cpp LLM     ││   │
+│  │  └──────────┘ └──────────────────────────────────┘│   │
 │  └──────────────────────────────────────────────────┘   │
-│           │                                             │
-│           │ 从 Server A 的 MinIO 下载音频                │
-│           ▼                                             │
-│     192.168.31.45:9000 (MinIO)                          │
+│           │                          ▲                   │
+│           │ 从 Server A 的 MinIO     │ OpenAI 兼容 API   │
+│           │ 下载音频                 │                   │
+│           ▼                          │                   │
+│     192.168.31.45:9000 (MinIO)  ┌────┴─────────────┐    │
+│                                 │ llama.cpp :8080  │    │
+│                                 │ Qwen2.5-7B Q4KM  │    │
+│                                 └──────────────────┘    │
 └─────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────┐
@@ -211,6 +223,11 @@ GET    /api/stats/recent-alerts     # 最近告警
 GET    /api/settings                # 获取系统设置
 PUT    /api/settings                # 更新系统设置
 
+# RAG 知识库问答
+POST   /api/rag/query               # RAG 问答 (代理到 AI Engine)
+POST   /api/rag/index               # 触发转写文本索引
+GET    /api/rag/stats               # 索引统计 (文档数、索引大小)
+
 # WebSocket
 WS     /ws/realtime?channel=realtime  # 实时推送 (支持频道参数)
 ```
@@ -235,18 +252,24 @@ ESP32上传音频 → 保存MinIO → 写入MySQL(audio_records)
 | `pipeline/emotion_engine.py` | emotion2vec 情感分析 (funasr AutoModel 加载) |
 | `pipeline/nlu_engine.py` | NLU关键词/意图提取 |
 | `pipeline/pipeline.py` | 推理流水线串联 |
+| `pipeline/text_embedder.py` | **text2vec 中文文本向量化 (768维)** |
 | `speaker_db/search.py` | FAISS 说话人检索 (10万规模) |
 | `speaker_db/enroll.py` | 声纹注册 |
+| `rag/vector_store.py` | **FAISS 文本向量存储 (转写知识库)** |
+| `rag/retriever.py` | **向量检索器：query → Top-K** |
+| `rag/generator.py` | **llama.cpp 客户端 → LLM 生成回答** |
+| `rag/config.py` | **RAG 配置 (LLM、Top-K、阈值)** |
 | `main.py` | FastAPI入口 (端口8001，从项目根目录以 `ai_engine.main:app` 启动) |
 
 **RTX 4090 推理能力**:
 
-| 模型 | 显存占用 | 推理速度 |
-|------|----------|----------|
-| Paraformer-zh | ~2GB | 实时率 1:50 |
-| CAM++ | ~1GB | 实时率 1:100 |
-| emotion2vec | ~1GB | 实时率 1:80 |
-| **总计** | ~4GB | 可满足200台并发 |
+| 模型 | 显存占用 | 用途 |
+|------|----------|------|
+| SenseVoice (ASR+情感) | ~2.0GB | 语音识别 + 情感分析 |
+| CAM++ | ~0.8GB | 说话人识别 |
+| text2vec-base-chinese | ~0.5GB | 文本向量化 (RAG) |
+| Qwen2.5-7B Q4_K_M (llama.cpp) | ~5.0GB | LLM 问答生成 (RAG) |
+| **总计** | **~8.3GB** | 24GB 裕量充足，可满足200台并发 |
 
 **10万声纹检索方案**:
 - FAISS IndexIVFFlat (倒排索引)
@@ -270,6 +293,7 @@ ESP32上传音频 → 保存MinIO → 写入MySQL(audio_records)
 | Search | 全文检索 (关键词搜索、高亮) |
 | AlertConfig | 告警配置 (规则、记录) |
 | SystemSettings | 系统设置 |
+| **RAGQuery** | **语音知识库问答 (基于向量检索 + LLM)** |
 
 ### 4.5 数据库设计
 
@@ -280,7 +304,7 @@ ESP32上传音频 → 保存MinIO → 写入MySQL(audio_records)
 | `devices` | 设备表 |
 | `tasks` | 采集任务表 |
 | `audio_records` | 音频记录表 |
-| `transcripts` | ASR转写结果表 |
+| `transcripts` | ASR转写结果表 (含 `rag_indexed` 字段标记是否已入向量库) |
 | `speaker_records` | 说话人识别记录表 |
 | `speakers` | 已注册说话人表 |
 | `emotion_records` | 情感分析表 |
@@ -426,6 +450,64 @@ ESP32上传音频 → 保存MinIO → 写入MySQL(audio_records)
 - `scripts/check-status.sh` - 服务状态检查脚本
 - `scripts/init-db.sql` - 数据库初始化
 
+### 5.7 RAG 知识库问答功能设计 (2026-07-22)
+
+**目标**: 将所有转写文本构建为向量知识库，支持语义搜索 + LLM 智能问答。
+
+**技术选型**:
+
+| 组件 | 方案 | 说明 |
+|------|------|------|
+| Embedding 模型 | text2vec-base-chinese | 768维中文语义向量，~400MB |
+| 向量存储 | FAISS (独立索引) | 复用已有依赖，与说话人索引独立 |
+| LLM | llama.cpp + Qwen2.5-7B-Instruct | Q4_K_M 量化 (~5GB)，本地离线 |
+| LLM API | llama.cpp server :8080 | OpenAI 兼容 API |
+
+**GPU 显存预算 (RTX 4090 24GB)**:
+
+| 模型 | 显存 |
+|------|------|
+| SenseVoice (ASR+情感) | ~2.0 GB |
+| CAM++ (说话人) | ~0.8 GB |
+| text2vec (文本向量化) | ~0.5 GB |
+| Qwen2.5-7B Q4_K_M (LLM) | ~5.0 GB |
+| **合计** | **~8.3 GB** |
+
+**新增文件**:
+- `ai_engine/pipeline/text_embedder.py` — text2vec 文本向量化引擎
+- `ai_engine/rag/vector_store.py` — FAISS 文本向量存储
+- `ai_engine/rag/retriever.py` — 向量检索器
+- `ai_engine/rag/generator.py` — llama.cpp 客户端
+- `ai_engine/rag/config.py` — RAG 配置
+- `server/app/api/v1/rag.py` — Server A RAG 路由
+- `web/src/api/rag.ts` — 前端 RAG API
+- `web/src/views/RAGQuery.vue` — 问答页面
+- `scripts/setup-llama-cpp.sh` — llama.cpp 编译安装脚本
+- `scripts/download-llm.sh` — 下载 Qwen2.5-7B GGUF 模型
+- `scripts/start-llama-server.sh` — llama-server 启动脚本
+
+**AI Engine 新增端点**:
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/embed` | POST | 文本向量化 `{"texts": [...]}` → `{"embeddings": [...]}` |
+| `/rag/query` | POST | RAG 问答 `{"query", "top_k}` → `{"answer", "sources"}` |
+| `/rag/index` | POST | 索引转写 `{"transcript_ids": [...]}` → `{"indexed": N}` |
+| `/rag/stats` | GET | 索引统计 `{"total_vectors", "index_size_mb"}` |
+
+**索引策略**:
+- 新音频推理完成后，Worker 自动调用 `/rag/index` 索引转写文本
+- Transcript 表新增 `rag_indexed` (Boolean) 和 `rag_indexed_at` (DateTime) 字段
+- 索引前检查 `rag_indexed`，已索引则跳过，避免重复
+- 历史数据通过批量脚本一次性索引
+
+**核心流程**:
+```
+索引: 音频推理完成 → Worker 调用 /rag/index → text2vec 向量化 → 存入 FAISS → 标记 rag_indexed=True
+
+查询: 用户提问 → text2vec 向量化 → FAISS 检索 Top-K → 构建 Prompt → llama.cpp LLM → 生成回答
+```
+
 ---
 
 ## 六、部署方案 (双服务器)
@@ -496,6 +578,7 @@ CUDA_VISIBLE_DEVICES=0
 | MinIO API | 9000 | Server A | ❌ (内网) |
 | MinIO Console | 9001 | Server A | ❌ (内网) |
 | AI Engine | 8001 | Server B | ❌ (内网, 仅Server A调用) |
+| llama.cpp Server | 8080 | Server B | ❌ (内网, 仅AI Engine调用) |
 
 ### 6.5 防火墙配置
 
@@ -510,6 +593,7 @@ sudo ufw enable
 **Server B**:
 ```bash
 sudo ufw allow from 192.168.31.45 to any port 8001  # AI Engine
+sudo ufw allow from 127.0.0.1 to any port 8080      # llama.cpp (本机)
 sudo ufw enable
 ```
 
@@ -537,7 +621,23 @@ sudo ufw enable
 - [ ] 音频详情页 AudioDetail — WaveSurfer 波形播放 + AI 结果展示联调
 - [ ] 前端分页 total 计数 — AudioList 的 total 目前写死 100
 
-### 7.3 低优先级
+### 7.3 RAG 知识库问答 (规划中)
+
+- [ ] Phase 1: llama.cpp 编译安装 + Qwen2.5-7B GGUF 模型下载
+- [ ] Phase 1: Transcript 表新增 `rag_indexed`/`rag_indexed_at` 字段
+- [ ] Phase 2: `text_embedder.py` — text2vec 文本向量化引擎
+- [ ] Phase 2: `vector_store.py` — FAISS 文本向量存储
+- [ ] Phase 2: AI Engine `/embed` + `/rag/index` 端点
+- [ ] Phase 2: Worker 推理完成后自动索引转写文本
+- [ ] Phase 3: `retriever.py` — 向量检索器
+- [ ] Phase 3: `generator.py` — llama.cpp 客户端
+- [ ] Phase 3: AI Engine `/rag/query` 端点
+- [ ] Phase 3: Server A `/api/rag/query` 代理
+- [ ] Phase 4: `RAGQuery.vue` — 前端问答页面
+- [ ] Phase 4: 历史数据批量索引脚本
+- [ ] Phase 5: 对话历史、过滤条件、增量更新优化
+
+### 7.4 低优先级
 
 - [ ] ESP32固件的OTA升级功能
 - [ ] 多语言支持
@@ -558,6 +658,9 @@ sudo ufw enable
 | PyTorch | 2.5.1+cu124 |
 | FunASR | 1.3.14 |
 | FAISS | 1.14.3 (cpu) |
+| **text2vec-base-chinese** | **shibing624/text2vec-base-chinese (sentence-transformers)** |
+| **llama.cpp** | **latest (CUDA build)** |
+| **Qwen2.5-7B-Instruct** | **Q4_K_M GGUF 量化** |
 | Vue | 3.5 |
 | Element Plus | 2.5 |
 | MySQL | 8.0 |
@@ -571,6 +674,9 @@ sudo ufw enable
 - CAM++: https://modelscope.cn/models/iic/speech_campplus_sv_zh-cn_16k-common
 - emotion2vec: https://modelscope.cn/models/iic/emotion2vec_base_finetuned
 - FAISS: https://github.com/facebookresearch/faiss
+- text2vec-base-chinese: https://huggingface.co/shibing624/text2vec-base-chinese
+- llama.cpp: https://github.com/ggerganov/llama.cpp
+- Qwen2.5-7B-Instruct-GGUF: https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF
 - ESP-IDF: https://docs.espressif.com/projects/esp-idf/
 
 ---
